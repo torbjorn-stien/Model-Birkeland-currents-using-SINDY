@@ -153,13 +153,8 @@ def read_files(directory, year=None):
         print("No files found for the specified year.")
         return pd.DataFrame()    
 
-Jpar, cLat_deg, lon_deg = read_Jpar(from_year_index = 1, nr_days = 2)
 
-year_data = read_files(IMF_PATH, year=2010)
-year_data_interp = year_data.interpolate(method = "linear") #dt = 4 min 
-
-
-def train_SINDY(input_dat, control_dat, dt, training_start, training_end,
+def train_SINDY(input_dat, dt, training_start, training_end,
                 feature_library, optimizer, feature_names, differentiation_method):
     """
     Parameters
@@ -180,21 +175,78 @@ def train_SINDY(input_dat, control_dat, dt, training_start, training_end,
     """
 
     X = input_dat[training_start:training_end, :].T
-    U = control_dat[training_start:training_end, :].T
     
-   
+    """
     model = ps.SINDy(
         differentiation_method = differentiation_method,
-        feature_library = feature_library,
+        feature_library = feature_library, #feature_names = feature_names
         optimizer = optimizer
         )
+    """
     
+    model = ps.SINDy(optimizer = optimizer)
     model.fit(X, t = dt, feature_names = feature_names)
     
     model.print()
     
     return model
-    
+
+Jpar, cLat_deg, lon_deg = read_Jpar(from_year_index = 1, nr_days = 2)
+
+year_data = read_files(IMF_PATH, year=2010)
+year_data_interp = year_data.interpolate(method = "linear") #dt = 4 min 
+year_data = np.array(year_data_interp)
+
+#%%
+
+Bx = np.array(year_data_interp["Bgsm_x"][:Jpar.shape[0]])
+By = np.array(year_data_interp["Bgsm_y"][:Jpar.shape[0]])
+Bz = np.array(year_data_interp["Bgsm_z"][:Jpar.shape[0]])
+#%%
+
+Theta = np.hstack((Jpar, Bx[:, np.newaxis], By[:, np.newaxis], Bz[:, np.newaxis]))
+
+dt = 4
+
+feature_library = ps.PolynomialLibrary(degree = 2, include_bias=True, include_interaction=True)
+
+optimizer = ps.STLSQ(threshold=0.1)
+
+feature_names = None
+
+differentiation_method = ps.SmoothedFiniteDifference(order=2)
+#%%
+
+
+quiet_2010_mod = train_SINDY(input_dat = Theta, dt = dt, training_start = 0,
+                             training_end = 100, feature_library = feature_library, 
+                             optimizer = optimizer, feature_names = feature_names, 
+                             differentiation_method = differentiation_method)
+
+#%%
+
+t = np.linspace(0, 50, 51)
+x = np.column_stack([np.sin(t), np.cos(t)])
+
+print(t.shape)
+print(x.shape)
+test_mod = ps.SINDy(differentiation_method=differentiation_method,
+                    feature_library=feature_library, optimizer=optimizer)
+
+test_mod.fit(x=x, t=t, x_dot=None, u=None, feature_names=["x", "y"])
+
+test_mod.print()
+  
+#%%
+
+t = np.linspace(0, 1, 100)
+x = 3 * np.exp(-2 * t)
+y  = 0.5 * np.exp(t)
+X = np.stack((x, y), axis = -1)
+
+model = ps.SINDy()
+model.fit(X, t=t, feature_names = ["x", "y"])
+
 
 
 

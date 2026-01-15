@@ -171,8 +171,10 @@ def train_SINDY(input_dat, dt, training_start, training_end,
     model : 
 
     """
-
-    X = input_dat[training_start:training_end, :]
+    try:
+        X = input_dat[training_start:training_end, :]
+    except IndexError:
+        X = input_dat[training_start:training_end]
     
     """
     model = ps.SINDy(
@@ -190,6 +192,43 @@ def train_SINDY(input_dat, dt, training_start, training_end,
     
     return model
 
+def Milan_coupling(By, Bz, Vx):
+    """
+    From Milan et al in JGR, https://doi.org/10.1029/2011JA017082
+    ONLY TO BE USED FOR NON-SUBSTORM PERIODS
+    Assumes negligent night-side reconnection during non-substorm intervals
+    
+    
+    Params:
+        Bx, By, Bz: 
+            type: ndarray
+            GSM coordinates
+    
+    Variables
+    ---------
+    B_yz : B_yz**2 = By**2 + Bz**2
+    """
+    R_E = 6357 * 1000
+    Lambda = 3.3 * 10**5    # m**(2/3) s**(1/3)
+    phi_d = np.zeros_like(Vx)
+    c = 3e8
+    theta = np.arctan2(By, Bz)
+    Byz = np.sqrt(By**2 + Bz**2)
+    # Have to force each Vx to float for calulation to work
+    # DO NOT TOUCH
+    for i in range(len(Vx)):
+        L_eff = (3.8 * R_E * (float(Vx[i])/(4 * 10**5 ))**(1/3)).real
+        
+        phi_d[i] = L_eff * float(Vx[i]) * Byz[i] * np.sin(0.5 * theta[i])**(9/2) # eq 15
+    
+    
+    #phi_d = Lambda * np.abs(Vx)**(4/3) * Byz * np.sin(1/2 * theta)**(9/2) # eq 14
+    
+    
+    F_max = phi_d/c
+    
+    return F_max
+#%%
 Jpar, cLat_deg, lon_deg = read_Jpar(from_year_index = 1, nr_days = 2)
 
 year_data = read_files(IMF_PATH, year=2010)
@@ -197,23 +236,48 @@ year_data_interp = year_data.interpolate(method = "linear") #dt = 4 min
 year_data = np.array(year_data_interp)
 
 print(year_data.shape)
+
+
+# Reading in alternate Solar Wind parameters (Vx, y, z) Hard coded for 2010
+SW_data = pd.read_csv("ASC8YJ061", skiprows = 31, sep = "\s+", 
+                      names=["Year", "day", "hour", "min", "sec", 
+                             "VGSM_X", "VGSM_Y", "VGSM_Z"])
+SW_data[SW_data == -9999.9] = np.nan
+
+SW_data_interp = SW_data.interpolate(method = "linear")
+
+SW_data_interp["datetime"] = pd.to_datetime(SW_data_interp["Year"].astype(str)) + pd.to_timedelta(SW_data_interp["day"] - 1, unit="D") \
+    + pd.to_timedelta(SW_data_interp["hour"], unit="h") + pd.to_timedelta(SW_data_interp["min"], unit="m") \
+        + pd.to_timedelta(SW_data_interp["sec"], unit="s")
+
+SW_data_interp = SW_data_interp.drop(columns=["Year", "day", "hour", "min", "sec"])
+SW_data_interp.set_index("datetime", inplace=True)
+
+SW_dat_dow = SW_data_interp.resample("4min")
+SW_dat_dow = SW_dat_dow.mean()
+
 #%%
 
-# Reead in control data
+# Read in control data
 Bx = np.array(year_data_interp["Bgsm_x"][:Jpar.shape[0]])
 By = np.array(year_data_interp["Bgsm_y"][:Jpar.shape[0]])
 Bz = np.array(year_data_interp["Bgsm_z"][:Jpar.shape[0]])
-print(f"Bx's shape: {Bx.shape}")
-
-# Stack control data to the end of system measurements matrix
-Theta = np.hstack((Jpar, Bx[:, np.newaxis], By[:, np.newaxis], Bz[:, np.newaxis]))
-print(f"Theta's shape: {Theta.shape}")
 
 training_start = 0
 training_end = 100
 
+Vx = np.array(SW_dat_dow["VGSM_X"])[:Jpar.shape[0]]
+
+print(f"Bx's shape: {Bx.shape}")
+
+# Stack control data to the end of system measurements matrix
+Theta = np.hstack((Jpar, Bx[:, np.newaxis], By[:, np.newaxis], Bz[:, np.newaxis], 
+                   Vx[:, np.newaxis]))
+print(f"Theta's shape: {Theta.shape}")
+
+
 # Visualize the combined measurements and control data
-plt.pcolormesh(Theta[training_start:training_end, 1150:1203])
+plt.pcolormesh(Theta[training_start:training_end, 1199:-1])
 plt.colorbar()
 plt.show()
 
@@ -221,37 +285,39 @@ plt.show()
 
 # Define SINDY model parameters
 dt = 4
- 
-feature_library = ps.PDELibrary()
+
+reconnection_voltage = Milan_coupling(By, Bz, Vx)
+
+my_library = ps.CustomLibrary([lambda x: np.sin(x), lambda x: np.cos(x), ])
+
+feature_library = ps.GeneralizedLibrary(libraries= [ps.PDELibrary(), 
+                                                    my_library, ps.PolynomialLibrary(degree=3)])
 
 optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(threshold = 0.01), 
                                  bagging=True, library_ensemble=True,
-                                 n_models = 5) # Default aggregator is median
+                                 n_models = 10) # Default aggregator is median
 
 feature_names = None
 
-differentiation_method = ps.SmoothedFiniteDifference(order=3) 
-#%%
-
-# Train SINDY model
-quiet_2010_mod = train_SINDY(input_dat = Theta, dt = dt, training_start = training_start,
-                             training_end = training_end, feature_library = feature_library, 
-                             optimizer = optimizer, feature_names = feature_names, 
-                             differentiation_method = differentiation_method)
-                            #%%
-
-# Get model coefficients and visualize error
-quiet_2010_mod.coefficients()
-
+differentiation_method = ps.FiniteDifference() 
 
 #%%
-print(len(feature_library.get_feature_names()))
+training_end = 400
+y = Theta[0:2, 0:training_end].T # 0:4 is quick, 0:5 takes forever
+t = np.arange(0, training_end * 4, 4)
+mod = ps.SINDy(optimizer = optimizer,
+               feature_library=feature_library,
+               differentiation_method=differentiation_method)
 
-print(Theta[0, :].shape)
-#%%
 
-quiet_2010_sim = quiet_2010_mod.simulate(Theta[0, :],
-                                         np.arange(0, 100, 4))
+mod.fit(y, t=dt)
+pred = mod.simulate(y[0], t)
 
+mod.print()
+
+plt.plot(t, y)
+plt.plot(t, pred, ls="dotted")
+plt.xlabel("Minutes")
+plt.show()
 
 

@@ -202,19 +202,19 @@ year_data = np.array(year_data_interp)
 Bx = np.array(year_data_interp["Bgsm_x"][:Jpar.shape[0]])
 By = np.array(year_data_interp["Bgsm_y"][:Jpar.shape[0]])
 Bz = np.array(year_data_interp["Bgsm_z"][:Jpar.shape[0]])
-#%%
+
 
 Theta = np.hstack((Jpar, Bx[:, np.newaxis], By[:, np.newaxis], Bz[:, np.newaxis]))
 
 dt = 4
 
-feature_library = ps.PolynomialLibrary(degree = 2, include_bias=True, include_interaction=True)
+feature_library = ps.PDELibrary()
 
-optimizer = ps.STLSQ(threshold=0.1)
+optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(), bagging=10)
 
 feature_names = None
 
-differentiation_method = ps.SmoothedFiniteDifference(order=2)
+differentiation_method = ps.SmoothedFiniteDifference(order=3)
 #%%
 
 
@@ -223,30 +223,8 @@ quiet_2010_mod = train_SINDY(input_dat = Theta, dt = dt, training_start = 0,
                              optimizer = optimizer, feature_names = feature_names, 
                              differentiation_method = differentiation_method)
 
-#%%
 
-t = np.linspace(0, 50, 51)
-x = np.column_stack([np.sin(t), np.cos(t)])
-
-print(t.shape)
-print(x.shape)
-test_mod = ps.SINDy(differentiation_method=differentiation_method,
-                    feature_library=feature_library, optimizer=optimizer)
-
-test_mod.fit(x=x, t=t, x_dot=None, u=None, feature_names=["x", "y"])
-
-test_mod.print()
   
-#%%
-
-t = np.linspace(0, 1, 100)
-x = 3 * np.exp(-2 * t)
-y  = 0.5 * np.exp(t)
-X = np.stack((x, y), axis = -1)
-
-model = ps.SINDy()
-model.fit(X, t=t, feature_names = ["x", "y"])
-
 
 
 

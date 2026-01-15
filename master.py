@@ -22,10 +22,7 @@ import pandas as pd
 from read_ace_files import read_dat
 from sklearn.metrics import r2_score
 from matplotlib.animation import FuncAnimation
-from PIL import Image
-from datetime import datetime, timedelta
-from cartopy.feature.nightshade import Nightshade
-import matplotlib.animation as animation
+
 
 
 """
@@ -103,6 +100,7 @@ def read_Jpar(from_year_index, nr_days):
         if i == stop_val:
             break
     
+    # Downsample to ACE data sample frequency, dt=4 min
     Jpar = np.concatenate(Jpar_list, axis=0)[::2]
     geo_clat_deg = np.concatenate(geo_cLat_list, axis = 0)[::2]
     geo_lon_deg = np.concatenate(geo_lon_deg_list, axis = 0)[::2]               
@@ -140,11 +138,11 @@ def read_files(directory, year=None):
         if filename == "mag_B_4min_2020.dat":
             break
         file_path = os.path.join(directory, filename)  # Construct the full file path
-        print(f"Reading file: {filename}")  # Optional: Print the file being read
-        df = read_dat(file_path)  # Read the file using your function
+        print(f"Reading file: {filename}")  # Print the file being read
+        df = read_dat(file_path)  # Read the file using function in separate file
         dataframes.append(df)  # Append the dataframe to the list
     
-    # Combine all dataframes into one (optional)
+    # Combine all dataframes into one
     if dataframes:
         combined_data = pd.concat(dataframes, ignore_index=True)
         print("Done reading!")
@@ -174,7 +172,7 @@ def train_SINDY(input_dat, dt, training_start, training_end,
 
     """
 
-    X = input_dat[training_start:training_end, :].T
+    X = input_dat[training_start:training_end, :]
     
     """
     model = ps.SINDy(
@@ -184,7 +182,8 @@ def train_SINDY(input_dat, dt, training_start, training_end,
         )
     """
     
-    model = ps.SINDy(optimizer = optimizer)
+    model = ps.SINDy(optimizer = optimizer, feature_library=feature_library,
+                     differentiation_method=differentiation_method)
     model.fit(X, t = dt, feature_names = feature_names)
     
     model.print()
@@ -197,34 +196,62 @@ year_data = read_files(IMF_PATH, year=2010)
 year_data_interp = year_data.interpolate(method = "linear") #dt = 4 min 
 year_data = np.array(year_data_interp)
 
+print(year_data.shape)
 #%%
 
+# Reead in control data
 Bx = np.array(year_data_interp["Bgsm_x"][:Jpar.shape[0]])
 By = np.array(year_data_interp["Bgsm_y"][:Jpar.shape[0]])
 Bz = np.array(year_data_interp["Bgsm_z"][:Jpar.shape[0]])
+print(f"Bx's shape: {Bx.shape}")
 
-
+# Stack control data to the end of system measurements matrix
 Theta = np.hstack((Jpar, Bx[:, np.newaxis], By[:, np.newaxis], Bz[:, np.newaxis]))
+print(f"Theta's shape: {Theta.shape}")
 
+training_start = 0
+training_end = 100
+
+# Visualize the combined measurements and control data
+plt.pcolormesh(Theta[training_start:training_end, 1150:1203])
+plt.colorbar()
+plt.show()
+
+#%%
+
+# Define SINDY model parameters
 dt = 4
-
+ 
 feature_library = ps.PDELibrary()
 
-optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(), bagging=10)
+optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(threshold = 0.01), 
+                                 bagging=True, library_ensemble=True,
+                                 n_models = 5) # Default aggregator is median
 
 feature_names = None
 
-differentiation_method = ps.SmoothedFiniteDifference(order=3)
+differentiation_method = ps.SmoothedFiniteDifference(order=3) 
 #%%
 
-
-quiet_2010_mod = train_SINDY(input_dat = Theta, dt = dt, training_start = 0,
-                             training_end = 100, feature_library = feature_library, 
+# Train SINDY model
+quiet_2010_mod = train_SINDY(input_dat = Theta, dt = dt, training_start = training_start,
+                             training_end = training_end, feature_library = feature_library, 
                              optimizer = optimizer, feature_names = feature_names, 
                              differentiation_method = differentiation_method)
+                            #%%
+
+# Get model coefficients and visualize error
+quiet_2010_mod.coefficients()
 
 
-  
+#%%
+print(len(feature_library.get_feature_names()))
+
+print(Theta[0, :].shape)
+#%%
+
+quiet_2010_sim = quiet_2010_mod.simulate(Theta[0, :],
+                                         np.arange(0, 100, 4))
 
 
 

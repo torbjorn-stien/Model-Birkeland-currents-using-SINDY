@@ -296,14 +296,8 @@ my_library = ps.CustomLibrary([lambda x: np.sin(x), lambda x: np.cos(x), ])
 # Can be combined with weak formalized SINDy. Weak formulation can use WeakPDELibrary,
 # Otherwise I must construct the system rows by projecting data onto weak samples.
 # w_ik^v = \int_Omega_k theta(x;t) X^v(x;t) d^D x dt eq. 5 in SINDyCP paper
-#
 
-
-
-feature_library = ps.GeneralizedLibrary(libraries = [ps.PDELibrary,
-                                          my_library])
-
-optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(threshold = 0.0001), 
+optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(threshold = 0.001), 
                                  bagging=True, library_ensemble=True,
                                  n_models = 10) # Default aggregator is median
 
@@ -316,36 +310,74 @@ differentiation_method = ps.FiniteDifference()
 training_end = 400
 x = Theta[0:training_end, 0:2] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
 t = np.arange(0, training_end * 4, 4)
+u = np.vstack((Bx[:training_end], By[:training_end], Bz[:training_end])).T
 
 #x = np.vstack((Theta[0:training_end, 0], Bx[0:training_end])).T
 
-#%%
+
 lib = ps.PolynomialLibrary()
                     #temporal_grid= t,
                     #differentiation_method=differentiation_method)
+
+combined_lib = ps.GeneralizedLibrary(libraries = [my_library, lib])
 
 mod = ps.SINDy(optimizer = optimizer,
                feature_library=lib,#feature_library,
                differentiation_method=differentiation_method)
 
 
-mod.fit(x = x, t = t, u = Bx[0:training_end])
+mod.fit(x = x, t = t, u = u)
 
 mod.print()
 
 #%%
-pred = mod.simulate(x[0, :], t, u = Bx[0:len(t)])
-
-
-
+pred = mod.simulate(x[0, :], t, u = u[:, 0:len(t)])
 
 print(len(t), x.shape[0])
 
-plt.plot(t, x)
-plt.plot(t[:-1], pred, ls="dotted")
-plt.xlabel("Minutes")
-#plt.ylim(-2.5, 2.5)
+#%%
+
+print(mod.n_features_in_)
+print(mod.n_output_features_)
+print(mod.n_control_features_)
+
+# Plot results
+fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+
+# Plot 1st measurement
+axes[0, 0].plot(t, x[:, 0], 'b', label='True x')
+axes[0, 0].plot(t[:-1], pred[:, 0], 'r--', label='SINDy x')
+axes[0, 0].set_ylabel('Jpar')
+#axes[0, 0].set_ylim([-2.5, 2.5])
+axes[0, 0].legend()
+
+# Plot 2nd measurement
+axes[1, 0].plot(t, x[:, 1], 'b', label='True y')
+axes[1, 0].plot(t[:-1], pred[:, 1], 'r--', label='SINDy y')
+axes[1, 0].set_ylabel('Jpar')
+axes[1, 0].set_xlabel('Minutes')
+#axes[1, 0].set_ylim([-2.5, 2.5])
+axes[1, 0].legend()
+
+# Plot phase space
+# Joinked from a pysindy test script, kept in to keep the [2, 2] looking nice
+axes[0, 1].plot(x[:, 0], x[:, 1], 'b', label='True')
+axes[0, 1].plot(pred[:, 0], pred[:, 1], 'r--', label='SINDy')
+axes[0, 1].set_xlabel('Jpar 1')
+axes[0, 1].set_ylabel('Jpar 2')
+axes[0, 1].legend()
+
+# Plot error
+axes[1, 1].plot(t[:-1], x[:-1, 0] - pred[:, 0], 'b', label='Meas 1 error')
+axes[1, 1].plot(t[:-1], x[:-1, 1] - pred[:, 1], 'r', label='Meas 2 error')
+axes[1, 1].set_xlabel('Minutes')
+axes[1, 1].set_ylabel('Error')
+#axes[1, 1].set_ylim([-2.5, 2.5])
+axes[1, 1].legend()
+
+plt.tight_layout()
 plt.show()
+print("Plotted!")
 
 
 

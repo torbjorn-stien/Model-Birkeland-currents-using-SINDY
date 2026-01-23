@@ -285,6 +285,8 @@ plt.show()
 
 #%%
 
+#RUN THIS SECTION EVERY TIME
+
 # Define SINDY model parameters
 dt = 4
 
@@ -310,10 +312,9 @@ feature_names = None
 differentiation_method = ps.FiniteDifference() 
 
 
-#%%
       
 training_end = 400
-x = Theta[0:training_end, 0:1] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
+x = Theta[0:training_end, 0:2] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
 t = np.arange(0, training_end * 4, 4)
 
 #x = np.vstack((Theta[0:training_end, 0], Bx[0:training_end])).T
@@ -329,9 +330,13 @@ mod = ps.SINDy(optimizer = optimizer,
 
 
 mod.fit(x = x, t = t, u = Bx[0:training_end])
-pred = mod.simulate(x[0], t, u = Bx[0:len(t)])
 
 mod.print()
+
+#%%
+pred = mod.simulate(x[0, :], t, u = Bx[0:len(t)])
+
+
 
 
 print(len(t), x.shape[0])

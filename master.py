@@ -268,6 +268,8 @@ training_end = 100
 
 Vx = np.array(SW_dat_dow["VGSM_X"])[:Jpar.shape[0]]
 
+reconnection_voltage = Milan_coupling(By, Bz, Vx)
+
 print(f"Bx's shape: {Bx.shape}")
 
 # Stack control data to the end of system measurements matrix
@@ -277,7 +279,7 @@ print(f"Theta's shape: {Theta.shape}")
 
 
 # Visualize the combined measurements and control data
-plt.pcolormesh(Theta[training_start:training_end, 1199:-1])
+plt.pcolormesh(Theta[training_start:training_end, 1195:1200])
 plt.colorbar()
 plt.show()
 
@@ -286,14 +288,20 @@ plt.show()
 # Define SINDY model parameters
 dt = 4
 
-reconnection_voltage = Milan_coupling(By, Bz, Vx)
-
 my_library = ps.CustomLibrary([lambda x: np.sin(x), lambda x: np.cos(x), ])
 
-feature_library = ps.GeneralizedLibrary(libraries= [ps.PDELibrary(), 
-                                                    my_library, ps.PolynomialLibrary(degree=3)])
+# SINDyCP uses ParametrizedLibrary, to create Theta(X, U) = Theta_feat(X) x Theta_par(U) 
+# Can be combined with weak formalized SINDy. Weak formulation can use WeakPDELibrary,
+# Otherwise I must construct the system rows by projecting data onto weak samples.
+# w_ik^v = \int_Omega_k theta(x;t) X^v(x;t) d^D x dt eq. 5 in SINDyCP paper
+#
 
-optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(threshold = 0.01), 
+
+
+feature_library = ps.GeneralizedLibrary(libraries = [ps.PDELibrary,
+                                          my_library])
+
+optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(threshold = 0.0001), 
                                  bagging=True, library_ensemble=True,
                                  n_models = 10) # Default aggregator is median
 
@@ -301,23 +309,38 @@ feature_names = None
 
 differentiation_method = ps.FiniteDifference() 
 
+
 #%%
+      
 training_end = 400
-y = Theta[0:2, 0:training_end].T # 0:4 is quick, 0:5 takes forever
+x = Theta[0:training_end, 0:1] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
 t = np.arange(0, training_end * 4, 4)
+
+#x = np.vstack((Theta[0:training_end, 0], Bx[0:training_end])).T
+
+#%%
+lib = ps.PolynomialLibrary()
+                    #temporal_grid= t,
+                    #differentiation_method=differentiation_method)
+
 mod = ps.SINDy(optimizer = optimizer,
-               feature_library=feature_library,
+               feature_library=lib,#feature_library,
                differentiation_method=differentiation_method)
 
 
-mod.fit(y, t=dt)
-pred = mod.simulate(y[0], t)
+mod.fit(x = x, t = t, u = Bx[0:training_end])
+pred = mod.simulate(x[0], t, u = Bx[0:len(t)])
 
 mod.print()
 
-plt.plot(t, y)
-plt.plot(t, pred, ls="dotted")
+
+print(len(t), x.shape[0])
+
+plt.plot(t, x)
+plt.plot(t[:-1], pred, ls="dotted")
 plt.xlabel("Minutes")
+#plt.ylim(-2.5, 2.5)
 plt.show()
+
 
 

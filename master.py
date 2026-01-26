@@ -149,7 +149,7 @@ def read_files(directory, year=None):
         return combined_data
     else:
         print("No files found for the specified year.")
-        return pd.DataFrame()    
+        return pd.DataFrame()
 
 
 def train_SINDY(input_dat, dt, training_start, training_end,
@@ -319,7 +319,12 @@ lib = ps.PolynomialLibrary()
                     #temporal_grid= t,
                     #differentiation_method=differentiation_method)
 
+#input_lib = ps.CustomLibrary()
+
 combined_lib = ps.GeneralizedLibrary(libraries = [my_library, lib])
+
+param_lib = ps.ParameterizedLibrary(feature_library=lib, 
+                                           parameter_library= Bx)
 
 mod = ps.SINDy(optimizer = optimizer,
                feature_library=lib,#feature_library,
@@ -359,15 +364,15 @@ axes[1, 0].set_xlabel('Minutes')
 #axes[1, 0].set_ylim([-2.5, 2.5])
 axes[1, 0].legend()
 
-# Plot phase space
-# Joinked from a pysindy test script, kept in to keep the [2, 2] looking nice
-axes[0, 1].plot(x[:, 0], x[:, 1], 'b', label='True')
-axes[0, 1].plot(pred[:, 0], pred[:, 1], 'r--', label='SINDy')
-axes[0, 1].set_xlabel('Jpar 1')
-axes[0, 1].set_ylabel('Jpar 2')
+# Plot error (publicity)
+axes[0, 1].plot(t[:-1], x[:-1, 0] - pred[:, 0], 'b', label='Meas 1 error')
+axes[0, 1].plot(t[:-1], x[:-1, 1] - pred[:, 1], 'r', label='Meas 2 error')
+axes[0, 1].set_xlabel('Minutes')
+axes[0, 1].set_ylabel('Error')
+axes[0, 1].set_ylim([-1, 1])
 axes[0, 1].legend()
 
-# Plot error
+# Plot error (true)
 axes[1, 1].plot(t[:-1], x[:-1, 0] - pred[:, 0], 'b', label='Meas 1 error')
 axes[1, 1].plot(t[:-1], x[:-1, 1] - pred[:, 1], 'r', label='Meas 2 error')
 axes[1, 1].set_xlabel('Minutes')

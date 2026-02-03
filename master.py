@@ -284,6 +284,10 @@ plt.colorbar()
 plt.show()
 
 #%%
+plt.plot(reconnection_voltage[:training_end])
+plt.show()
+
+#%%
 
 #RUN THIS SECTION EVERY TIME
 
@@ -297,7 +301,7 @@ my_library = ps.CustomLibrary([lambda x: np.sin(x), lambda x: np.cos(x), ])
 # Otherwise I must construct the system rows by projecting data onto weak samples.
 # w_ik^v = \int_Omega_k theta(x;t) X^v(x;t) d^D x dt eq. 5 in SINDyCP paper
 
-optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(threshold = 0.001), 
+optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(threshold = 0.01), 
                                  bagging=True, library_ensemble=True,
                                  n_models = 10) # Default aggregator is median
 
@@ -305,12 +309,16 @@ feature_names = None
 
 differentiation_method = ps.FiniteDifference() 
 
+reconnection_voltage = np.nan_to_num(reconnection_voltage)
+plt.plot(reconnection_voltage)
+plt.show()
+#%%
 
-      
-training_end = 400
+training_end = 100
 x = Theta[0:training_end, 0:2] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
 t = np.arange(0, training_end * 4, 4)
-u = np.vstack((Bx[:training_end], By[:training_end], Bz[:training_end])).T
+u = np.vstack((Bx[:training_end], By[:training_end], Bz[:training_end],
+               reconnection_voltage[:training_end])).T
 
 #x = np.vstack((Theta[0:training_end, 0], Bx[0:training_end])).T
 
@@ -321,13 +329,14 @@ lib = ps.PolynomialLibrary()
 
 #input_lib = ps.CustomLibrary()
 
-combined_lib = ps.GeneralizedLibrary(libraries = [my_library, lib])
+combined_lib = ps.GeneralizedLibrary(libraries = [my_library, lib],
+                                     tensor_array = [[1, 1]])
 
-param_lib = ps.ParameterizedLibrary(feature_library=lib, 
-                                           parameter_library= Bx)
+param_lib = ps.ParameterizedLibrary(feature_library=lib, parameter_library= lib,
+                                    num_features = 3, num_parameters=2)
 
 mod = ps.SINDy(optimizer = optimizer,
-               feature_library=lib,#feature_library,
+               feature_library= combined_lib,
                differentiation_method=differentiation_method)
 
 
@@ -340,8 +349,8 @@ pred = mod.simulate(x[0, :], t, u = u[:, 0:len(t)])
 
 print(len(t), x.shape[0])
 
-#%%
 
+#%%
 print(mod.n_features_in_)
 print(mod.n_output_features_)
 print(mod.n_control_features_)
@@ -356,13 +365,14 @@ axes[0, 0].set_ylabel('Jpar')
 #axes[0, 0].set_ylim([-2.5, 2.5])
 axes[0, 0].legend()
 
-# Plot 2nd measurement
-axes[1, 0].plot(t, x[:, 1], 'b', label='True y')
-axes[1, 0].plot(t[:-1], pred[:, 1], 'r--', label='SINDy y')
-axes[1, 0].set_ylabel('Jpar')
-axes[1, 0].set_xlabel('Minutes')
-#axes[1, 0].set_ylim([-2.5, 2.5])
-axes[1, 0].legend()
+if x.shape[1] > 1:
+    # Plot 2nd measurement
+    axes[1, 0].plot(t, x[:, 1], 'b', label='True y')
+    axes[1, 0].plot(t[:-1], pred[:, 1], 'r--', label='SINDy y')
+    axes[1, 0].set_ylabel('Jpar')
+    axes[1, 0].set_xlabel('Minutes')
+    #axes[1, 0].set_ylim([-2.5, 2.5])
+    axes[1, 0].legend()
 
 # Plot error (publicity)
 axes[0, 1].plot(t[:-1], x[:-1, 0] - pred[:, 0], 'b', label='Meas 1 error')
@@ -383,6 +393,48 @@ axes[1, 1].legend()
 plt.tight_layout()
 plt.show()
 print("Plotted!")
+
+
+#%%
+
+time_index = 0
+pos_index1 = 0
+pos_index2 = 100
+
+longitudes = lon_deg
+latitudes = 90 - cLat_deg
+central_longitude = 0
+
+longitudes = longitudes[time_index, pos_index1:pos_index2]
+latitudes = latitudes[time_index, pos_index1:pos_index2]
+
+# Create a scatter plot of Jpar over the northern hemisphere
+fig = plt.figure(figsize=(10, 8))
+ax = plt.axes(projection=ccrs.NorthPolarStereo(central_longitude=central_longitude))
+ax.set_extent([-180, 180, 60, 90], crs=ccrs.PlateCarree())  # Northern Hemisphere
+# Add features to the map
+ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
+ax.add_feature(cfeature.BORDERS, linewidth=0.5)
+ax.gridlines(draw_labels=True)
+# Scatter plot of Jpar
+sc = ax.scatter(longitudes, latitudes, c=Jpar[time_index, pos_index1:pos_index2], cmap='coolwarm', s=60,
+                transform=ccrs.PlateCarree())
+cbar = plt.colorbar(sc, orientation='vertical')
+cbar.ax.tick_params(labelsize = fontsize*1)
+cbar.set_label('Radial Current Density (μA/m²)', fontsize = fontsize*1.5)
+"""
+# Add Magnetic Local Time (MLT) labels
+mlt_labels = {6: (mlt_longitudes[6], 65), 12: (mlt_longitudes[12], 65), 
+              18: (mlt_longitudes[18], 65), 24: (mlt_longitudes[24], 65)}
+for mlt, (lon, lat) in mlt_labels.items():
+    ax.text(lon, lat, f'{mlt} MLT', transform=ccrs.PlateCarree(),
+            fontsize=15, color='black', ha='center', va='center',
+            bbox=dict(facecolor='white', alpha=0.7, edgecolor='black'))
+"""
+# Title and show plot
+plt.title('Average error in reconstructed data', fontsize = fontsize*1.5)
+plt.show()
+
 
 
 

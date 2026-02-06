@@ -229,7 +229,8 @@ def Milan_coupling(By, Bz, Vx):
     
     return F_max
 #%%
-Jpar, cLat_deg, lon_deg = read_Jpar(from_year_index = 1, nr_days = 2)
+Jpar, cLat_deg, lon_deg = read_Jpar(from_year_index = 1, nr_days = 100)
+Jpar = np.array(Jpar)
 
 year_data = read_files(IMF_PATH, year=2010)
 year_data_interp = year_data.interpolate(method = "linear") #dt = 4 min 
@@ -256,15 +257,14 @@ SW_data_interp.set_index("datetime", inplace=True)
 SW_dat_dow = SW_data_interp.resample("4min")
 SW_dat_dow = SW_dat_dow.mean()
 
+
 #%%
 
 # Read in control data
 Bx = np.array(year_data_interp["Bgsm_x"][:Jpar.shape[0]])
 By = np.array(year_data_interp["Bgsm_y"][:Jpar.shape[0]])
 Bz = np.array(year_data_interp["Bgsm_z"][:Jpar.shape[0]])
-
-training_start = 0
-training_end = 100
+Bz[Bz>0] = 0
 
 Vx = np.array(SW_dat_dow["VGSM_X"])[:Jpar.shape[0]]
 
@@ -273,23 +273,16 @@ reconnection_voltage = Milan_coupling(By, Bz, Vx)
 print(f"Bx's shape: {Bx.shape}")
 
 # Stack control data to the end of system measurements matrix
-Theta = np.hstack((Jpar, Bx[:, np.newaxis], By[:, np.newaxis], Bz[:, np.newaxis], 
-                   Vx[:, np.newaxis]))
+Theta = np.hstack((Jpar, Bx[:, np.newaxis], By[:, np.newaxis], Bz[:, np.newaxis])) 
+                   #Vx[:, np.newaxis]))
 print(f"Theta's shape: {Theta.shape}")
 
-
-# Visualize the combined measurements and control data
-plt.pcolormesh(Theta[training_start:training_end, 1195:1200])
-plt.colorbar()
-plt.show()
-
-#%%
-plt.plot(reconnection_voltage[:training_end])
-plt.show()
-
 #%%
 
-#RUN THIS SECTION EVERY TIME
+print(type(Theta))
+print(np.any(np.isnan(Bz)))
+
+#%%
 
 # Define SINDY model parameters
 dt = 4
@@ -301,27 +294,30 @@ my_library = ps.CustomLibrary([lambda x: np.sin(x), lambda x: np.cos(x), ])
 # Otherwise I must construct the system rows by projecting data onto weak samples.
 # w_ik^v = \int_Omega_k theta(x;t) X^v(x;t) d^D x dt eq. 5 in SINDyCP paper
 
-optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(threshold = 0.01), 
+optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(threshold=0.01), 
                                  bagging=True, library_ensemble=True,
-                                 n_models = 10) # Default aggregator is median
+                                 n_models = 20) # Default aggregator is median
 
 feature_names = None
 
 differentiation_method = ps.FiniteDifference() 
 
-reconnection_voltage = np.nan_to_num(reconnection_voltage)
-plt.plot(reconnection_voltage)
-plt.show()
-#%%
 
-training_end = 100
-x = Theta[0:training_end, 0:2] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
-t = np.arange(0, training_end * 4, 4)
-u = np.vstack((Bx[:training_end], By[:training_end], Bz[:training_end],
-               reconnection_voltage[:training_end])).T
+training_end = 35000
+x = Theta[0:training_end, 52:53] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
+t = np.arange(0, training_end * 10,  10)
+
+J_21 = Theta[0:training_end, 52+1]
+J_01 = Theta[0:training_end, 52-1]
+J_12 = Theta[0:training_end, 52+50]
+J_10 = Theta[0:training_end, 52-50]
+
+# Deposited inputs
+# Bx[:training_end], By[:training_end],
+u = np.vstack((Bx[:training_end], By[:training_end], Bz[:training_end], 
+                  J_21, J_01, J_12, J_10)).T
 
 #x = np.vstack((Theta[0:training_end, 0], Bx[0:training_end])).T
-
 
 lib = ps.PolynomialLibrary()
                     #temporal_grid= t,
@@ -343,12 +339,22 @@ mod = ps.SINDy(optimizer = optimizer,
 mod.fit(x = x, t = t, u = u)
 
 mod.print()
+print(mod.score(x, t, u = u[:, :len(t)]))
 
 #%%
 pred = mod.simulate(x[0, :], t, u = u[:, 0:len(t)])
 
 print(len(t), x.shape[0])
 
+
+#%%
+
+plt.plot(pred)
+plt.plot(x)
+plt.ylim(-1, 1)
+plt.show()
+
+print(mod.score(x, t, u = u[:, :len(t)]))
 
 #%%
 print(mod.n_features_in_)
@@ -362,8 +368,9 @@ fig, axes = plt.subplots(2, 2, figsize=(12, 8))
 axes[0, 0].plot(t, x[:, 0], 'b', label='True x')
 axes[0, 0].plot(t[:-1], pred[:, 0], 'r--', label='SINDy x')
 axes[0, 0].set_ylabel('Jpar')
-#axes[0, 0].set_ylim([-2.5, 2.5])
+axes[0, 0].set_xlim([-2.5, 2.5])
 axes[0, 0].legend()
+plt.show()
 
 if x.shape[1] > 1:
     # Plot 2nd measurement
@@ -397,9 +404,9 @@ print("Plotted!")
 
 #%%
 
-time_index = 0
-pos_index1 = 0
-pos_index2 = 100
+time_index = 100
+pos_index1 = 52
+pos_index2 = 54
 
 longitudes = lon_deg
 latitudes = 90 - cLat_deg

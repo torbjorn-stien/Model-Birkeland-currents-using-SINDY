@@ -112,13 +112,14 @@ def read_Jpar(from_year_index, nr_days):
     return Jpar, geo_clat_deg, geo_lon_deg 
 
 # Breaks for 2020:
-def read_files(directory, year=None):
+def read_files(directory, start_year=None, end_year=None):
     """
-    Reads .dat files from a directory. If a year is specified, only reads files for that year.
+    Reads .dat files from a directory. If a range of years is specified, only reads files within that range.
     
     Args:
         directory (str): Path to the directory containing the .dat files.
-        year (int, optional): Specific year to read. If None, reads all files.
+        start_year (int, optional): Start year to read files from. If None, reads all files.
+        end_year (int, optional): End year to read files up to. If None, reads all files.
     
     Returns:
         pd.DataFrame: Combined DataFrame of all read files.
@@ -126,9 +127,16 @@ def read_files(directory, year=None):
     # Get all .dat files in the directory
     files = sorted([f for f in os.listdir(directory) if f.endswith(".dat")])
     
-    # Filter files by year if a year is specified
-    if year is not None:
-        files = [f for f in files if str(year) in f]  # Only include files with the specified year
+    # Filter files by year range if start_year and/or end_year are specified
+    if start_year is not None or end_year is not None:
+        filtered_files = []
+        for f in files:
+            # Extract year from the filename
+            for year in range(start_year or 0, (end_year or 9999) + 1):
+                if str(year) in f:
+                    filtered_files.append(f)
+                    break
+        files = filtered_files
     
     # List to store the dataframes
     dataframes = []
@@ -136,8 +144,8 @@ def read_files(directory, year=None):
     # Loop through the filtered files and read them
     for filename in files:
         if filename == "mag_B_4min_2020.dat":
-            print("Tried to read 2020, but 2020 is broken! ")
-            break
+            print("Tried to read 2020, but 2020 is broken!")
+            continue
         file_path = os.path.join(directory, filename)  # Construct the full file path
         print(f"Reading file: {filename}")  # Print the file being read
         df = read_dat(file_path)  # Read the file using function in separate file
@@ -149,7 +157,7 @@ def read_files(directory, year=None):
         print("Done reading!")
         return combined_data
     else:
-        print("No files found for the specified year.")
+        print("No files found for the specified year range.")
         return pd.DataFrame()
 
 
@@ -230,13 +238,17 @@ def Milan_coupling(By, Bz, Vx):
     
     return F_max
 #%%
-Jpar, cLat_deg, lon_deg = read_Jpar(from_year_index = 1, nr_days = 100)
+Jpar, cLat_deg, lon_deg = read_Jpar(from_year_index = 4, nr_days = 3 * 365)
 Jpar = np.array(Jpar)
-
-year_data = read_files(IMF_PATH, year=2010)
+#%%
+year_data = read_files(IMF_PATH, start_year=2013, end_year=2016)
 year_data_interp = year_data.interpolate(method = "linear") #dt = 4 min 
 year_data = np.array(year_data_interp)
 
+"""
+Something is fucky with the number of datapoints within the year range
+2013-2016
+"""
 print(year_data.shape)
 
 
@@ -259,6 +271,7 @@ SW_dat_dow = SW_data_interp.resample("4min")
 SW_dat_dow = SW_dat_dow.mean()
 
 
+
 #%%
 
 # Read in control data
@@ -266,6 +279,7 @@ Bx = np.array(year_data_interp["Bgsm_x"][:Jpar.shape[0]])
 By = np.array(year_data_interp["Bgsm_y"][:Jpar.shape[0]])
 Bz = np.array(year_data_interp["Bgsm_z"][:Jpar.shape[0]])
 Bz[Bz>0] = 0
+Bz[Bz<-200] = 0
 
 Vx = np.array(SW_dat_dow["VGSM_X"])[:Jpar.shape[0]]
 
@@ -290,7 +304,8 @@ plt.show()
 # Define SINDY model parameters
 dt = 4
 
-my_library = ps.CustomLibrary([lambda x: np.sin(x),  ])
+my_library = ps.CustomLibrary([lambda x: np.sin(x), lambda x, y: np.sin(x + y),
+                               lambda x: np.exp(x)])
 
 # SINDyCP uses ParametrizedLibrary, to create Theta(X, U) = Theta_feat(X) x Theta_par(U) 
 # Can be combined with weak formalized SINDy. Weak formulation can use WeakPDELibrary,
@@ -309,8 +324,10 @@ differentiation_method = ps.FiniteDifference()
 3 timesteps of the full system needs 1.92 TiB (1.1TB) RAM to model.
 """
 training_start = 0
-training_end = 30000
-x = Theta[training_start:training_end, 1130:1131] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
+training_end = 130000
+
+pos_index = 1130
+x = Theta[training_start:training_end, pos_index] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
 t = np.arange(training_start * 10, training_end * 10,  10)
 
 J_21 = Theta[training_start:training_end, 52+1]
@@ -322,15 +339,15 @@ J_10 = Theta[training_start:training_end, 52-50]
 # Bx[:training_end], By[:training_end],
 # +50 seems to have the greatest positive effect on model
 u = np.vstack(( Bz[training_start:training_end], 
-               Theta[training_start:training_end, 1130 +50 ],
+               Theta[training_start:training_end, pos_index +50 ],
 
                   )).T
 
+#spatio_temporal_grid = 
 
-lib = ps.PDELibrary(function_library=ps.PolynomialLibrary(degree=5),
-                    derivative_order = 0,
+lib = ps.PDELibrary(function_library=ps.PolynomialLibrary(degree=3),
+                    derivative_order = 0, 
                     include_interaction = True, include_bias = True)
-
 
 #input_lib = ps.CustomLibrary()
 
@@ -374,11 +391,11 @@ print(len(t), x.shape[0])
 
 #%%
 saved_mod = mod
-print(saved_mod)
+saved_mod.print()
 #%%
 
 mod = saved_mod
-
+mod.print()
 #%%
 
 plt.plot(x, "b", label = "True x")

@@ -136,6 +136,7 @@ def read_files(directory, year=None):
     # Loop through the filtered files and read them
     for filename in files:
         if filename == "mag_B_4min_2020.dat":
+            print("Tried to read 2020, but 2020 is broken! ")
             break
         file_path = os.path.join(directory, filename)  # Construct the full file path
         print(f"Reading file: {filename}")  # Print the file being read
@@ -282,46 +283,54 @@ print(f"Theta's shape: {Theta.shape}")
 print(type(Theta))
 print(np.any(np.isnan(Bz)))
 
+plt.plot(Bz)
+plt.show()
 #%%
 
 # Define SINDY model parameters
 dt = 4
 
-my_library = ps.CustomLibrary([lambda x: np.sin(x), lambda x: np.cos(x), ])
+my_library = ps.CustomLibrary([lambda x: np.sin(x),  ])
 
 # SINDyCP uses ParametrizedLibrary, to create Theta(X, U) = Theta_feat(X) x Theta_par(U) 
 # Can be combined with weak formalized SINDy. Weak formulation can use WeakPDELibrary,
 # Otherwise I must construct the system rows by projecting data onto weak samples.
 # w_ik^v = \int_Omega_k theta(x;t) X^v(x;t) d^D x dt eq. 5 in SINDyCP paper
 
-optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(threshold=0.01), 
+optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(threshold=0.010), 
                                  bagging=True, library_ensemble=True,
-                                 n_models = 20) # Default aggregator is median
+                                 n_models = 30) # Default aggregator is median
 
 feature_names = None
 
 differentiation_method = ps.FiniteDifference() 
 
+"""
+3 timesteps of the full system needs 1.92 TiB (1.1TB) RAM to model.
+"""
+training_start = 0
+training_end = 30000
+x = Theta[training_start:training_end, 1130:1131] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
+t = np.arange(training_start * 10, training_end * 10,  10)
 
-training_end = 35000
-x = Theta[0:training_end, 52:53] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
-t = np.arange(0, training_end * 10,  10)
-
-J_21 = Theta[0:training_end, 52+1]
-J_01 = Theta[0:training_end, 52-1]
-J_12 = Theta[0:training_end, 52+50]
-J_10 = Theta[0:training_end, 52-50]
+J_21 = Theta[training_start:training_end, 52+1]
+J_01 = Theta[training_start:training_end, 52-1]
+J_12 = Theta[training_start:training_end, 52+50]
+J_10 = Theta[training_start:training_end, 52-50]
 
 # Deposited inputs
 # Bx[:training_end], By[:training_end],
-u = np.vstack((Bx[:training_end], By[:training_end], Bz[:training_end], 
-                  J_21, J_01, J_12, J_10)).T
+# +50 seems to have the greatest positive effect on model
+u = np.vstack(( Bz[training_start:training_end], 
+               Theta[training_start:training_end, 1130 +50 ],
 
-#x = np.vstack((Theta[0:training_end, 0], Bx[0:training_end])).T
+                  )).T
 
-lib = ps.PolynomialLibrary()
-                    #temporal_grid= t,
-                    #differentiation_method=differentiation_method)
+
+lib = ps.PDELibrary(function_library=ps.PolynomialLibrary(degree=5),
+                    derivative_order = 0,
+                    include_interaction = True, include_bias = True)
+
 
 #input_lib = ps.CustomLibrary()
 
@@ -339,22 +348,47 @@ mod = ps.SINDy(optimizer = optimizer,
 mod.fit(x = x, t = t, u = u)
 
 mod.print()
-print(mod.score(x, t, u = u[:, :len(t)]))
+print(mod.score(x, t, u = u))
+#%%
+
+plt.plot(x)
+plt.show()
+
+plt.plot()
 
 #%%
+
+"""
+model.simulate() is EXTREMELY slow. 17 minutes to predict 100 timesteps.
+Only run if necessary/for a good fit.
+
+predict() is apparantly quick, however only returns x_dot.
+"""
+
+sim_length = 10
+t_sim = t[:sim_length]
+
 pred = mod.simulate(x[0, :], t, u = u[:, 0:len(t)])
 
 print(len(t), x.shape[0])
 
+#%%
+saved_mod = mod
+print(saved_mod)
+#%%
+
+mod = saved_mod
 
 #%%
 
-plt.plot(pred)
-plt.plot(x)
+plt.plot(x, "b", label = "True x")
+plt.plot(pred, "r--", label = "SINDy x")
 plt.ylim(-1, 1)
+#plt.xlim(3900, 4100)
+plt.legend()
 plt.show()
 
-print(mod.score(x, t, u = u[:, :len(t)]))
+print(f" R² score: {mod.score(x, t, u = u[:, :len(t)])}")
 
 #%%
 print(mod.n_features_in_)
@@ -368,7 +402,7 @@ fig, axes = plt.subplots(2, 2, figsize=(12, 8))
 axes[0, 0].plot(t, x[:, 0], 'b', label='True x')
 axes[0, 0].plot(t[:-1], pred[:, 0], 'r--', label='SINDy x')
 axes[0, 0].set_ylabel('Jpar')
-axes[0, 0].set_xlim([-2.5, 2.5])
+#axes[0, 0].set_xlim([-2.5, 2.5])
 axes[0, 0].legend()
 plt.show()
 
@@ -383,7 +417,8 @@ if x.shape[1] > 1:
 
 # Plot error (publicity)
 axes[0, 1].plot(t[:-1], x[:-1, 0] - pred[:, 0], 'b', label='Meas 1 error')
-axes[0, 1].plot(t[:-1], x[:-1, 1] - pred[:, 1], 'r', label='Meas 2 error')
+if x.shape[1] > 1:
+    axes[0, 1].plot(t[:-1], x[:-1, 1] - pred[:, 1], 'r', label='Meas 2 error')
 axes[0, 1].set_xlabel('Minutes')
 axes[0, 1].set_ylabel('Error')
 axes[0, 1].set_ylim([-1, 1])
@@ -391,7 +426,8 @@ axes[0, 1].legend()
 
 # Plot error (true)
 axes[1, 1].plot(t[:-1], x[:-1, 0] - pred[:, 0], 'b', label='Meas 1 error')
-axes[1, 1].plot(t[:-1], x[:-1, 1] - pred[:, 1], 'r', label='Meas 2 error')
+if x.shape[1] > 1:
+    axes[1, 1].plot(t[:-1], x[:-1, 1] - pred[:, 1], 'r', label='Meas 2 error')
 axes[1, 1].set_xlabel('Minutes')
 axes[1, 1].set_ylabel('Error')
 #axes[1, 1].set_ylim([-2.5, 2.5])

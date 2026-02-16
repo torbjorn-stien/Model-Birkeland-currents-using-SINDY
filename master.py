@@ -52,6 +52,7 @@ def read_Jpar(from_year_index, nr_days):
     Jpar_list = []
     geo_cLat_list = []
     geo_lon_deg_list = []
+    missing_dates = []
     """
     read_ampere function breaks for day 22 in 2012. Seems to work for all of 2010-2011
     aswell as 2013+
@@ -60,6 +61,7 @@ def read_Jpar(from_year_index, nr_days):
     """
     i = 0
     stop_val =  nr_days # Number of days to process
+    prev_date = None
     for year in sorted(year_dirs, key=lambda p: int(p.name))[from_year_index:]: # Filter out 2009, by using [1:]
         print(f"Year: {year.name}")
         
@@ -77,7 +79,28 @@ def read_Jpar(from_year_index, nr_days):
                         extracted_path.parent.mkdir(parents=True, exist_ok=True)
                         zf.extract(member, path=tmpdir)
                         #print(f"    Extracted: {member} -> {extracted_path}")
-                        #print("    Exists:", os.path.exists(extracted_path))
+                        
+                        date = re.search(r"(\d{4})(\d{2})(\d{2})", member)
+                        
+                        # Some days are missing within the dataset(s), this returns the missing dates
+                        if prev_date:
+                            # Checks wether there are any days missing
+                            day = int(date.group(3))
+                            prev_day = int(prev_date.group(3))
+                            
+                            diff = day - prev_day
+                            
+                            # If there are days missing, returns the dates
+                            while diff > 1:
+                                diff = diff - 1
+                                missing_day = day - diff
+                                
+                                month = int(date.group(2))
+                                year = int(date.group(1))
+                                
+                                missing_date = int(f"{year:04d}{month:02d}{missing_day:02d}")
+                                missing_dates.append(missing_date)
+                            
                         # Pass the full path as a string
                         data = read_ampere_ncdf(str(extracted_path), OutVars="J")
                         
@@ -87,6 +110,8 @@ def read_Jpar(from_year_index, nr_days):
                         #dB_Naagcm_list.append(data["dB_Ngeo"])
                         #dB_Eaagcm_list.append(data["dB_Egeo"])
                         #print(i)
+                        
+                        prev_date = date
                         i += 1
     
                         if i == stop_val:
@@ -109,7 +134,7 @@ def read_Jpar(from_year_index, nr_days):
     #print("Final shapes:", dB_Naagcm_all.shape, dB_Eaagcm_all.shape)
     print("Final shapes:", Jpar.shape, geo_clat_deg.shape, geo_lon_deg.shape)#%%
     
-    return Jpar, geo_clat_deg, geo_lon_deg 
+    return Jpar, geo_clat_deg, geo_lon_deg, np.array(missing_dates)
 
 # Breaks for 2020:
 def read_files(directory, start_year=None, end_year=None):
@@ -238,8 +263,13 @@ def Milan_coupling(By, Bz, Vx):
     
     return F_max
 #%%
-Jpar, cLat_deg, lon_deg = read_Jpar(from_year_index = 4, nr_days = 3 * 365)
+Jpar, cLat_deg, lon_deg, missing = read_Jpar(from_year_index = 4, nr_days = 365)
 Jpar = np.array(Jpar)
+
+#%%
+
+plt.plot(Jpar[:, 1])
+plt.show()
 #%%
 year_data = read_files(IMF_PATH, start_year=2013, end_year=2016)
 year_data_interp = year_data.interpolate(method = "linear") #dt = 4 min 
@@ -278,12 +308,43 @@ SW_dat_dow = SW_dat_dow.mean()
 Bx = np.array(year_data_interp["Bgsm_x"][:Jpar.shape[0]])
 By = np.array(year_data_interp["Bgsm_y"][:Jpar.shape[0]])
 Bz = np.array(year_data_interp["Bgsm_z"][:Jpar.shape[0]])
-Bz[Bz>0] = 0
 Bz[Bz<-200] = 0
 
 Vx = np.array(SW_dat_dow["VGSM_X"])[:Jpar.shape[0]]
 
 reconnection_voltage = Milan_coupling(By, Bz, Vx)
+
+sin_squared = np.sin(theta_c/2)**2
+sin_4th = np.sin(theta_c/2)**4
+
+p = n * v**2/2
+Bs = Bz
+Bs[Bs>0] = 0
+
+HWR = v * Bs
+
+epsilon_1 = v * B**2 * sin_4th
+epsilon_2 = v * B_T**2 * sin_4th
+epsilon_3 = v * B * sin_4th
+
+sw_e_field = v * B_T
+
+E_KL = v * B_T * sin_squared
+E_KL_sqrt = np.sqrt(E_KL)
+
+E_KLV = v**(4/3) * B_T * sin_squared * p**(1/6)
+
+E_WAV =  v * B_T * sin_4th
+E_WAV_squared = E_WAV**2
+E_WAV_sqrt = np.sqrt(E_WAV)
+
+E_WV = v**(4/3) * B_T * sin_4th * p**(1/6)
+
+E_SR = v * B_T * sin_4th * p**(1/2)
+
+E_TL = n**(1/2) * v**2 * B_T * np.sin(theta_c/2)**6
+
+
 
 print(f"Bx's shape: {Bx.shape}")
 

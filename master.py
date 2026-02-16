@@ -62,6 +62,7 @@ def read_Jpar(from_year_index, nr_days):
     i = 0
     stop_val =  nr_days # Number of days to process
     prev_date = None
+    count = 0
     for year in sorted(year_dirs, key=lambda p: int(p.name))[from_year_index:]: # Filter out 2009, by using [1:]
         print(f"Year: {year.name}")
         
@@ -104,15 +105,30 @@ def read_Jpar(from_year_index, nr_days):
                         # Pass the full path as a string
                         data = read_ampere_ncdf(str(extracted_path), OutVars="J")
                         
+                        if len(data["Jpar"]) != 720:
+                            expected_points = np.arange(start = 0.0, stop = 24, step = 24/720)
+                            print(type(expected_points))
+                            
+                            
+                            missing_points = np.setdiff1d(np.round(np.array(data["time"]), decimals = 2), np.round(expected_points, decimals = 2))
+                            print(type(np.array(data["time"])))
+                            
+                            #missing = expected_points - np.array(data["time"])
+                            
+                            #missing_indices = [np.where(expected_points == tp)[0][0] for tp in missing_points]
+                            print(missing_points)
+                            count += 1
+                        
+                        prev_date = date
+                        i += 1
+                        
                         Jpar_list.append(data["Jpar"])
                         geo_cLat_list.append(data["geo_cLat_deg"])
                         geo_lon_deg_list.append(data["geo_lon_deg"])
                         #dB_Naagcm_list.append(data["dB_Ngeo"])
                         #dB_Eaagcm_list.append(data["dB_Egeo"])
-                        #print(i)
                         
-                        prev_date = date
-                        i += 1
+                        
     
                         if i == stop_val:
                             break
@@ -133,8 +149,8 @@ def read_Jpar(from_year_index, nr_days):
     #dB_Eaagcm_all = np.concatenate(dB_Eaagcm_list, axis=0)
     #print("Final shapes:", dB_Naagcm_all.shape, dB_Eaagcm_all.shape)
     print("Final shapes:", Jpar.shape, geo_clat_deg.shape, geo_lon_deg.shape)#%%
-    
-    return Jpar, geo_clat_deg, geo_lon_deg, np.array(missing_dates)
+    print(count)
+    return Jpar, geo_clat_deg, geo_lon_deg, np.array(missing_dates), data
 
 # Breaks for 2020:
 def read_files(directory, start_year=None, end_year=None):
@@ -263,7 +279,7 @@ def Milan_coupling(By, Bz, Vx):
     
     return F_max
 #%%
-Jpar, cLat_deg, lon_deg, missing = read_Jpar(from_year_index = 4, nr_days = 365)
+Jpar, cLat_deg, lon_deg, missing, mon = read_Jpar(from_year_index = 5, nr_days = 60)
 Jpar = np.array(Jpar)
 
 #%%
@@ -304,6 +320,45 @@ SW_dat_dow = SW_dat_dow.mean()
 
 #%%
 
+
+def Milan_coupling(By, Bz, Vx):
+    """
+    From Milan et al in JGR, https://doi.org/10.1029/2011JA017082
+    ONLY TO BE USED FOR NON-SUBSTORM PERIODS
+    Assumes negligent night-side reconnection during non-substorm intervals
+    
+    
+    Params:
+        Bx, By, Bz: 
+            type: ndarray
+            GSM coordinates
+    
+    Variables
+    ---------
+    B_yz : B_yz**2 = By**2 + Bz**2
+    """
+    R_E = 6357 * 1000
+    Lambda = 3.3 * 10**5    # m**(2/3) s**(1/3)
+    phi_d = np.zeros_like(Vx)
+    c = 3e8
+    theta = np.arctan2(By, Bz)
+    Byz = np.sqrt(By**2 + Bz**2)
+    # Have to force each Vx to float for calulation to work
+    # DO NOT TOUCH
+    for i in range(len(Vx)):
+        L_eff = (3.8 * R_E * (float(Vx[i])/(4 * 10**5 ))**(1/3)).real
+        
+        phi_d[i] = L_eff * float(Vx[i]) * Byz[i] * np.sin(0.5 * theta[i])**(9/2) # eq 15
+    
+    
+    #phi_d = Lambda * np.abs(Vx)**(4/3) * Byz * np.sin(1/2 * theta)**(9/2) # eq 14
+    
+    
+    F_max = phi_d/c
+    
+    return F_max
+
+
 # Read in control data
 Bx = np.array(year_data_interp["Bgsm_x"][:Jpar.shape[0]])
 By = np.array(year_data_interp["Bgsm_y"][:Jpar.shape[0]])
@@ -311,8 +366,11 @@ Bz = np.array(year_data_interp["Bgsm_z"][:Jpar.shape[0]])
 Bz[Bz<-200] = 0
 
 Vx = np.array(SW_dat_dow["VGSM_X"])[:Jpar.shape[0]]
+v = Vx
 
 reconnection_voltage = Milan_coupling(By, Bz, Vx)
+
+theta_c = np.arctan(By, Bz)
 
 sin_squared = np.sin(theta_c/2)**2
 sin_4th = np.sin(theta_c/2)**4

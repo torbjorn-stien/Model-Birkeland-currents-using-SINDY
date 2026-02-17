@@ -44,6 +44,31 @@ fontsize = 20
 
 # 2009 has incomplete data
 def read_Jpar(from_year_index, nr_days):
+    """
+    Reads Ampere data, handles missing data and returns the Birkeland current
+    data with nan where there is missing data.
+
+    Parameters
+    ----------
+    from_year_index : int
+        index of the year to start reading from
+    nr_days : int
+        number of days of data to read 
+
+    Returns
+    -------
+    Jpar : np.array
+        Array of Birkeland currents for 1200 positions each dt
+    geo_clat_deg : np.array
+        DESCRIPTION.
+    geo_lon_deg : TYPE
+        DESCRIPTION.
+    missing_full_days : TYPE
+        DESCRIPTION.
+    missing_indices : TYPE
+        DESCRIPTION.
+
+    """
     # Reading in Ampere data:
     year_dirs = [d for d in amp_root.iterdir() if d.is_dir() and re.fullmatch(r"\d{4}", d.name)]
     
@@ -55,13 +80,17 @@ def read_Jpar(from_year_index, nr_days):
     missing_dates = []
     missing_points = []
     missing_indices = []
+    
+    Jpar = np.zeros((nr_days * 720, 1200))
+    
+    
     """
     read_ampere function breaks for day 22 in 2012. Seems to work for all of 2010-2011
     aswell as 2013+
     
     2009 is missing a lot of days
     """
-    i = 0
+    i = 0 # Counts how many days have passed
     stop_val =  nr_days # Number of days to process
     prev_date = None
     for year in sorted(year_dirs, key=lambda p: int(p.name))[from_year_index:]: # Filter out 2009, by using [1:]
@@ -105,10 +134,14 @@ def read_Jpar(from_year_index, nr_days):
                                 
                                 # returns the indices the missing days would have occupied if they were not missing
                                 start_indice = missing_day * 720
-                                end_indice = missing_day * 720 + 720 
+                                end_indice = start_indice + 720 
                                 
                                 indices_for_missing_day = np.arange(start_indice, end_indice, 1) 
                                 missing_indices.extend(indices_for_missing_day)
+                                
+                                Jpar[start_indice:end_indice] = np.nan
+                                
+                                i += 1
                             
                         # Pass the full path as a string
                         data = read_ampere_ncdf(str(extracted_path), OutVars="J")
@@ -118,25 +151,42 @@ def read_Jpar(from_year_index, nr_days):
                         if len(data["Jpar"]) != 720:
                             expected_points = np.arange(start = 0.0, stop = 24, step = 24/720)
                             actual_points = np.array(data["time"])
+                            missing_indices_this_day = []
                             
                             for idx, point in enumerate(expected_points):
                                 if not np.any(np.isclose(point, actual_points, atol=1e-4)):
                                     # Shifts the indices forward to the day they are missing from,
                                     # also shifts them forward by the missing full days
-                                    missing_indice = idx + (i + len(missing_dates)) * 720 
+                                    missing_indice = idx + i * 720
                                     missing_points.append(point)
                                     missing_indices.append(missing_indice)
+                                    missing_indices_this_day.append(idx)
                                     
+                            
+                            start_indice = i * 720
+                            end_indice = start_indice + 720
+                            
+                            actual_indices = np.delete(np.arange(0, 720, 1), 
+                                                       np.array(missing_indices_this_day))
+                            
+                            full_day_data = np.full((720, 1200), np.nan)
+                            full_day_data[actual_indices] = np.array(data["Jpar"])
                         
-                        prev_date = date
-                        i += 1
+                        else:
+                            full_day_data = np.array(data["Jpar"])
+
+                        start_indice = i * 720
+                        end_indice = start_indice + 720
                         
-                        Jpar_list.append(data["Jpar"])
+                        Jpar[start_indice:end_indice] = full_day_data
                         geo_cLat_list.append(data["geo_cLat_deg"])
                         geo_lon_deg_list.append(data["geo_lon_deg"])
                         #dB_Naagcm_list.append(data["dB_Ngeo"])
                         #dB_Eaagcm_list.append(data["dB_Egeo"])
-    
+                        
+                        prev_date = date
+                        i += 1
+                        
                         if i == stop_val:
                             break
                     if i == stop_val:
@@ -148,10 +198,9 @@ def read_Jpar(from_year_index, nr_days):
         if i == stop_val:
             break
     
-    # Downsample to ACE data sample frequency, dt=4 min
-    Jpar = np.concatenate(Jpar_list, axis=0)[::2]
-    geo_clat_deg = np.concatenate(geo_cLat_list, axis = 0)[::2]
-    geo_lon_deg = np.concatenate(geo_lon_deg_list, axis = 0)[::2]               
+    #Jpar = np.concatenate(Jpar_list, axis=0)
+    geo_clat_deg = np.concatenate(geo_cLat_list, axis = 0)
+    geo_lon_deg = np.concatenate(geo_lon_deg_list, axis = 0)               
     #dB_Naagcm_all = np.concatenate(dB_Naagcm_list, axis=0)
     #dB_Eaagcm_all = np.concatenate(dB_Eaagcm_list, axis=0)
     #print("Final shapes:", dB_Naagcm_all.shape, dB_Eaagcm_all.shape
@@ -160,7 +209,8 @@ def read_Jpar(from_year_index, nr_days):
     missing_indices = np.array(missing_indices)
     
     print("Final shapes:", Jpar.shape, geo_clat_deg.shape, geo_lon_deg.shape)#%%
-    print(count)
+    print(f"There are {len(missing_dates)} full days missing and an additional {len(missing_indices)-(len(missing_dates) * 720)} missing indices")
+    
     return Jpar, geo_clat_deg, geo_lon_deg, missing_full_days, missing_indices
 
 # Breaks for 2020:
@@ -291,12 +341,12 @@ def Milan_coupling(By, Bz, Vx):
     return F_max
 #%%
 Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 5, nr_days = 60)
-Jpar = np.array(Jpar)
 
 #%%
 
-plt.plot(Jpar[:, 1])
-plt.show()
+
+
+
 #%%
 year_data = read_files(IMF_PATH, start_year=2013, end_year=2016)
 year_data_interp = year_data.interpolate(method = "linear") #dt = 4 min 
@@ -505,7 +555,7 @@ plt.plot()
 model.simulate() is EXTREMELY slow. 17 minutes to predict 100 timesteps.
 Only run if necessary/for a good fit.
 
-predict() is apparantly quick, however only returns x_dot.
+predict() is apparently quick, however only returns x_dot.
 """
 
 sim_length = 10

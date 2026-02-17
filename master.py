@@ -64,7 +64,6 @@ def read_Jpar(from_year_index, nr_days):
     i = 0
     stop_val =  nr_days # Number of days to process
     prev_date = None
-    count = 0
     for year in sorted(year_dirs, key=lambda p: int(p.name))[from_year_index:]: # Filter out 2009, by using [1:]
         print(f"Year: {year.name}")
         
@@ -103,7 +102,7 @@ def read_Jpar(from_year_index, nr_days):
                                 
                                 missing_date = int(f"{year:04d}{month:02d}{missing_day:02d}")
                                 missing_dates.append(missing_date)
-                                print(missing_date)
+                                
                                 # returns the indices the missing days would have occupied if they were not missing
                                 start_indice = missing_day * 720
                                 end_indice = missing_day * 720 + 720 
@@ -128,7 +127,6 @@ def read_Jpar(from_year_index, nr_days):
                                     missing_points.append(point)
                                     missing_indices.append(missing_indice)
                                     
-                            count += 1
                         
                         prev_date = date
                         i += 1
@@ -138,8 +136,6 @@ def read_Jpar(from_year_index, nr_days):
                         geo_lon_deg_list.append(data["geo_lon_deg"])
                         #dB_Naagcm_list.append(data["dB_Ngeo"])
                         #dB_Eaagcm_list.append(data["dB_Egeo"])
-                        
-                        
     
                         if i == stop_val:
                             break
@@ -159,11 +155,13 @@ def read_Jpar(from_year_index, nr_days):
     #dB_Naagcm_all = np.concatenate(dB_Naagcm_list, axis=0)
     #dB_Eaagcm_all = np.concatenate(dB_Eaagcm_list, axis=0)
     #print("Final shapes:", dB_Naagcm_all.shape, dB_Eaagcm_all.shape
+    
     missing_full_days = np.array(missing_dates)
     missing_indices = np.array(missing_indices)
+    
     print("Final shapes:", Jpar.shape, geo_clat_deg.shape, geo_lon_deg.shape)#%%
     print(count)
-    return Jpar, geo_clat_deg, geo_lon_deg, missing_full_days, missing_indices, data
+    return Jpar, geo_clat_deg, geo_lon_deg, missing_full_days, missing_indices
 
 # Breaks for 2020:
 def read_files(directory, start_year=None, end_year=None):
@@ -292,9 +290,8 @@ def Milan_coupling(By, Bz, Vx):
     
     return F_max
 #%%
-Jpar, cLat_deg, lon_deg, missing_days, missing_indices, mon = read_Jpar(from_year_index = 5, nr_days = 60)
+Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 5, nr_days = 60)
 Jpar = np.array(Jpar)
-
 
 #%%
 
@@ -306,11 +303,8 @@ year_data_interp = year_data.interpolate(method = "linear") #dt = 4 min
 year_data = np.array(year_data_interp)
 
 """
-Something is fucky with the number of datapoints within the year range
-2013-2016
+2012, 2016 & 2020 were leap-years
 """
-print(year_data.shape)
-
 
 # Reading in alternate Solar Wind parameters (Vx, y, z) Hard coded for 2010
 SW_data = pd.read_csv("ASC8YJ061", skiprows = 31, sep = "\s+", 
@@ -329,7 +323,6 @@ SW_data_interp.set_index("datetime", inplace=True)
 
 SW_dat_dow = SW_data_interp.resample("4min")
 SW_dat_dow = SW_dat_dow.mean()
-
 
 
 #%%

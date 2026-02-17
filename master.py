@@ -53,6 +53,8 @@ def read_Jpar(from_year_index, nr_days):
     geo_cLat_list = []
     geo_lon_deg_list = []
     missing_dates = []
+    missing_points = []
+    missing_indices = []
     """
     read_ampere function breaks for day 22 in 2012. Seems to work for all of 2010-2011
     aswell as 2013+
@@ -105,18 +107,18 @@ def read_Jpar(from_year_index, nr_days):
                         # Pass the full path as a string
                         data = read_ampere_ncdf(str(extracted_path), OutVars="J")
                         
+                        # Checks if each day contains the correct amount of time-points
+                        # (720 pr. day for full dataset, 360 for downsampled dataset)
                         if len(data["Jpar"]) != 720:
                             expected_points = np.arange(start = 0.0, stop = 24, step = 24/720)
-                            print(type(expected_points))
+                            actual_points = np.array(data["time"])
                             
-                            
-                            missing_points = np.setdiff1d(np.round(np.array(data["time"]), decimals = 2), np.round(expected_points, decimals = 2))
-                            print(type(np.array(data["time"])))
-                            
-                            #missing = expected_points - np.array(data["time"])
-                            
-                            #missing_indices = [np.where(expected_points == tp)[0][0] for tp in missing_points]
-                            print(missing_points)
+                            for idx, point in enumerate(expected_points):
+                                if not np.any(np.isclose(point, actual_points, atol=1e-4)):
+                                    missing_indice = idx + i * 720 # Shifts the indices forward to the day they are missing from
+                                    missing_points.append(point)
+                                    missing_indices.append(missing_indice)
+                                    
                             count += 1
                         
                         prev_date = date
@@ -147,10 +149,12 @@ def read_Jpar(from_year_index, nr_days):
     geo_lon_deg = np.concatenate(geo_lon_deg_list, axis = 0)[::2]               
     #dB_Naagcm_all = np.concatenate(dB_Naagcm_list, axis=0)
     #dB_Eaagcm_all = np.concatenate(dB_Eaagcm_list, axis=0)
-    #print("Final shapes:", dB_Naagcm_all.shape, dB_Eaagcm_all.shape)
+    #print("Final shapes:", dB_Naagcm_all.shape, dB_Eaagcm_all.shape
+    missing_full_days = np.array(missing_dates)
+    missing_indices = np.array(missing_indices)
     print("Final shapes:", Jpar.shape, geo_clat_deg.shape, geo_lon_deg.shape)#%%
     print(count)
-    return Jpar, geo_clat_deg, geo_lon_deg, np.array(missing_dates), data
+    return Jpar, geo_clat_deg, geo_lon_deg, missing_full_days, missing_indices, data
 
 # Breaks for 2020:
 def read_files(directory, start_year=None, end_year=None):
@@ -279,8 +283,9 @@ def Milan_coupling(By, Bz, Vx):
     
     return F_max
 #%%
-Jpar, cLat_deg, lon_deg, missing, mon = read_Jpar(from_year_index = 5, nr_days = 60)
+Jpar, cLat_deg, lon_deg, missing_days, missing_indices, mon = read_Jpar(from_year_index = 5, nr_days = 60)
 Jpar = np.array(Jpar)
+
 
 #%%
 

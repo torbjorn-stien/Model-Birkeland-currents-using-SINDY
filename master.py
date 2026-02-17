@@ -93,7 +93,7 @@ def read_Jpar(from_year_index, nr_days):
                             
                             diff = day - prev_day
                             
-                            # If there are days missing, returns the dates
+                            # If there are days missing, returns the dates and indices
                             while diff > 1:
                                 diff = diff - 1
                                 missing_day = day - diff
@@ -103,6 +103,13 @@ def read_Jpar(from_year_index, nr_days):
                                 
                                 missing_date = int(f"{year:04d}{month:02d}{missing_day:02d}")
                                 missing_dates.append(missing_date)
+                                print(missing_date)
+                                # returns the indices the missing days would have occupied if they were not missing
+                                start_indice = missing_day * 720
+                                end_indice = missing_day * 720 + 720 
+                                
+                                indices_for_missing_day = np.arange(start_indice, end_indice, 1) 
+                                missing_indices.extend(indices_for_missing_day)
                             
                         # Pass the full path as a string
                         data = read_ampere_ncdf(str(extracted_path), OutVars="J")
@@ -115,7 +122,9 @@ def read_Jpar(from_year_index, nr_days):
                             
                             for idx, point in enumerate(expected_points):
                                 if not np.any(np.isclose(point, actual_points, atol=1e-4)):
-                                    missing_indice = idx + i * 720 # Shifts the indices forward to the day they are missing from
+                                    # Shifts the indices forward to the day they are missing from,
+                                    # also shifts them forward by the missing full days
+                                    missing_indice = idx + (i + len(missing_dates)) * 720 
                                     missing_points.append(point)
                                     missing_indices.append(missing_indice)
                                     

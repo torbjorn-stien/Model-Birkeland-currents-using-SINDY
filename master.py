@@ -22,7 +22,8 @@ import pandas as pd
 from read_ace_files import read_dat
 from sklearn.metrics import r2_score
 from matplotlib.animation import FuncAnimation
-
+import math
+from itertools import groupby
 
 
 """
@@ -109,7 +110,7 @@ def read_Jpar(from_year_index, nr_days):
                         extracted_path = tmpdir / member
                         extracted_path.parent.mkdir(parents=True, exist_ok=True)
                         zf.extract(member, path=tmpdir)
-                        #print(f"    Extracted: {member} -> {extracted_path}")
+                        print(f"    Extracted: {member} -> {extracted_path}")
                         
                         date = re.search(r"(\d{4})(\d{2})(\d{2})", member)
                         
@@ -340,17 +341,38 @@ def Milan_coupling(By, Bz, Vx):
     
     return F_max
 #%%
-Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 5, nr_days = 60)
-
+Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 5, nr_days = 365)
 #%%
+Jpar_downsampled = Jpar[::2]
 
+# Finds the lengths of nan intervals and non-nan intervals
+start_nan_indices = []
+end_nan_indices = []
 
+for i in range(len(Jpar_downsampled)):
+    if np.isnan(Jpar_downsampled[i, 0]) and not np.isnan(Jpar_downsampled[i - 1, 0]):
+        start_nan_indices.append(i)
+    
+    if not np.isnan(Jpar_downsampled[i, 0]) and np.isnan(Jpar_downsampled[i - 1, 0]):
+        end_nan_indices.append(i)
 
+start_nan_indices = np.array(start_nan_indices)
+end_nan_indices = np.array(end_nan_indices)   
 
+nan_lengths = end_nan_indices - start_nan_indices
+no_nan_lengths = np.zeros_like(nan_lengths)
+
+for i in range(len(nan_lengths)):
+    try:
+        no_nan_lengths[i] = start_nan_indices[i + 1] - start_nan_indices[i] - nan_lengths[i]
+    except IndexError:
+        break
+
+print(np.sum(nan_lengths))
 #%%
-year_data = read_files(IMF_PATH, start_year=2013, end_year=2016)
+year_data = read_files(IMF_PATH, start_year=2013, end_year=2013)
 year_data_interp = year_data.interpolate(method = "linear") #dt = 4 min 
-year_data = np.array(year_data_interp)
+#year_data = np.array(year_data_interp)
 
 """
 2012, 2016 & 2020 were leap-years
@@ -415,28 +437,50 @@ def Milan_coupling(By, Bz, Vx):
     
     return F_max
 
+nan_pos = np.where(np.isnan(Jpar_downsampled[:, 0]))[0]
+
+rows_with_nan = np.where(np.isnan(Jpar_downsampled).any(axis=1))[0]
+
+
 
 # Read in control data
-Bx = np.array(year_data_interp["Bgsm_x"][:Jpar.shape[0]])
-By = np.array(year_data_interp["Bgsm_y"][:Jpar.shape[0]])
-Bz = np.array(year_data_interp["Bgsm_z"][:Jpar.shape[0]])
+Bx = np.array(year_data_interp["Bgsm_x"][:Jpar_downsampled.shape[0]])
+By = np.array(year_data_interp["Bgsm_y"][:Jpar_downsampled.shape[0]])
+Bz = np.array(year_data_interp["Bgsm_z"][:Jpar_downsampled.shape[0]])
 Bz[Bz<-200] = 0
 
+Bx = np.delete(Bx, rows_with_nan)
+By = np.delete(By, rows_with_nan)
+Bz = np.delete(Bz, rows_with_nan)
+
 Vx = np.array(SW_dat_dow["VGSM_X"])[:Jpar.shape[0]]
+
+Vx = np.delete(Vx, nan_pos)
+
 v = Vx
 
+Jpar_downsampled = np.delete(Jpar_downsampled, rows_with_nan, axis = 0)
+
+
+
+#%%
 reconnection_voltage = Milan_coupling(By, Bz, Vx)
 
 theta_c = np.arctan(By, Bz)
 
 sin_squared = np.sin(theta_c/2)**2
 sin_4th = np.sin(theta_c/2)**4
+#%%
 
-p = n * v**2/2
 Bs = Bz
 Bs[Bs>0] = 0
 
 HWR = v * Bs
+HWR[HWR == -0] = 0
+
+
+#%%
+p = n * v**2/2
 
 epsilon_1 = v * B**2 * sin_4th
 epsilon_2 = v * B_T**2 * sin_4th
@@ -459,13 +503,16 @@ E_SR = v * B_T * sin_4th * p**(1/2)
 
 E_TL = n**(1/2) * v**2 * B_T * np.sin(theta_c/2)**6
 
-
+#%%
 
 print(f"Bx's shape: {Bx.shape}")
 
 # Stack control data to the end of system measurements matrix
-Theta = np.hstack((Jpar, Bx[:, np.newaxis], By[:, np.newaxis], Bz[:, np.newaxis])) 
+Theta = np.hstack((Jpar_downsampled, Bx[:, np.newaxis], By[:, np.newaxis], Bz[:, np.newaxis])) 
                    #Vx[:, np.newaxis]))
+
+missing_index = int(missing_indices[0]/2)
+#Theta = Theta[:missing_index]
 print(f"Theta's shape: {Theta.shape}")
 
 #%%
@@ -480,7 +527,7 @@ plt.show()
 # Define SINDY model parameters
 dt = 4
 
-my_library = ps.CustomLibrary([lambda x: np.sin(x), lambda x, y: np.sin(x + y),
+my_library = ps.CustomLibrary([lambda x: np.sin(x), #lambda x, y: np.sin(x + y),
                                lambda x: np.exp(x)])
 
 # SINDyCP uses ParametrizedLibrary, to create Theta(X, U) = Theta_feat(X) x Theta_par(U) 
@@ -499,8 +546,8 @@ differentiation_method = ps.FiniteDifference()
 """
 3 timesteps of the full system needs 1.92 TiB (1.1TB) RAM to model.
 """
-training_start = 0
-training_end = 130000
+training_start = 4500
+training_end = 127557
 
 pos_index = 1130
 x = Theta[training_start:training_end, pos_index] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
@@ -514,9 +561,9 @@ J_10 = Theta[training_start:training_end, 52-50]
 # Deposited inputs
 # Bx[:training_end], By[:training_end],
 # +50 seems to have the greatest positive effect on model
-u = np.vstack(( Bz[training_start:training_end], 
-               Theta[training_start:training_end, pos_index +50 ],
-
+u = np.vstack(( Bs[training_start:training_end], 
+               #Theta[training_start:training_end, pos_index + 50],
+               #HWR[training_start:training_end]
                   )).T
 
 #spatio_temporal_grid = 
@@ -547,8 +594,9 @@ print(mod.score(x, t, u = u))
 plt.plot(x)
 plt.show()
 
-plt.plot()
-
+plt.plot(u)
+plt.show()
+print(np.any(np.isnan(x)))
 #%%
 
 """

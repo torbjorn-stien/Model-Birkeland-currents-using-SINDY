@@ -340,6 +340,60 @@ def Milan_coupling(By, Bz, Vx):
     F_max = phi_d/c
     
     return F_max
+
+def delay_control_data(control_dat, nr_of_delays, delay_indexes):
+    """
+    
+    Parameters
+    ----------
+    control_dat : numpy array
+        Control data that should be delayed
+    nr_delays : int
+        How many times the control data should be delayed.
+    delay_indexes : int
+        How many indexes each delay should be.
+        For ACE data dt = 4min, -> 1 delay 1 index = delay 4 minutes
+        
+
+    Returns
+    -------
+    delayed_input : numpy array
+        Array with each delay stacked below eachother on axis 0
+
+    """
+    u = control_dat
+    delays = np.arange(0, nr_of_delays, delay_indexes)
+    # 1 index delay = 4 mins, = approx spacing between field lines of 7.5 Earth radii
+    # Number of delays = number of fieldlines having an appreciable input, 7 worked best for DMDc
+    
+    if nr_of_delays == 0:
+        return u
+    
+    if u.ndim == 1:
+        u = u[:, np.newaxis]  # Reshape to (num_rows, 1)
+        
+    num_rows, num_features = u.shape
+
+    num_delays = len(delays)
+    delayed_input = np.zeros((num_rows, num_features * num_delays)) # Initialize final matrix
+    
+    for i, delay in enumerate(delays):
+        start_col = i * num_features # Start column for this delay
+        end_col = start_col + num_features # End column for this delay
+    
+        if delay == 0:
+            # No delay; copy of original input
+            delayed_input[:, start_col:end_col] = u
+        else:
+            # Shifts each block of inputs by the number of indexes given above.
+            # Values before input = 0
+            delayed = np.zeros_like(u)
+            delayed[delay:] = u[:-delay]
+            delayed_input[:, start_col:end_col] = delayed
+
+    return delayed_input
+
+
 #%%
 Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 5, nr_days = 365)
 #%%
@@ -448,17 +502,25 @@ By = np.array(year_data_interp["Bgsm_y"][:Jpar_downsampled.shape[0]])
 Bz = np.array(year_data_interp["Bgsm_z"][:Jpar_downsampled.shape[0]])
 Bz[Bz<-200] = 0
 
+"""
 Bx = np.delete(Bx, rows_with_nan)
 By = np.delete(By, rows_with_nan)
 Bz = np.delete(Bz, rows_with_nan)
+"""
 
-Vx = np.array(SW_dat_dow["VGSM_X"])[:Jpar.shape[0]]
+Vx = np.array(SW_dat_dow["VGSM_X"])[:Jpar_downsampled.shape[0]]
 
 Vx = np.delete(Vx, nan_pos)
 
 v = Vx
 
 Jpar_downsampled = np.delete(Jpar_downsampled, rows_with_nan, axis = 0)
+
+"""
+Fit some sort of polynomial to the smoothed n points before and after a nan interval
+removes nan intervals, however can not be implemented for active periods as the 
+Jpar varies too much.
+"""
 
 #%%
 reconnection_voltage = Milan_coupling(By, Bz, Vx)
@@ -474,6 +536,28 @@ Bs[Bs>0] = 0
 
 HWR = v * Bs
 HWR[HWR == -0] = 0
+
+Bs_delayed = delay_control_data(Bs, 7, 1)
+
+mult_ = 1
+for i in range(7):
+    mult_ *= Bs_delayed[:, i]
+
+for i in range(len(mult_)):
+    if mult_[i] >= 0:
+        mult_[i - 7:i] = 0
+    
+plt.plot(mult_)
+plt.show()
+
+#%%
+plt.plot(Bz)
+plt.show()
+#%%
+
+plt.plot(Bs[:2000])
+plt.show()
+
 
 
 #%%
@@ -538,13 +622,14 @@ optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(threshold=0.010),
 
 feature_names = None
 
+# Finite difference amplifies noise in data.
 differentiation_method = ps.FiniteDifference() 
 
 """
 3 timesteps of the full system needs 1.92 TiB (1.1TB) RAM to model.
 """
-training_start = 4500
-training_end = 127557
+training_start = 0
+training_end = 26680
 
 pos_index = 1130
 x = Theta[training_start:training_end, pos_index] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
@@ -558,34 +643,14 @@ J_10 = Theta[training_start:training_end, 52-50]
 # Deposited inputs
 # Bx[:training_end], By[:training_end],
 # +50 seems to have the greatest positive effect on model
+# +50 = one step "to the right", +1 = one step "down"
 u = np.vstack((Bs[training_start:training_end], 
-               #Theta[training_start:training_end, pos_index + 50],
+               Theta[training_start:training_end, pos_index + 50],
                #HWR[training_start:training_end]
                   )).T
 
-# Delay implementation:
-delays = np.arange(0, 7, 1) # 1 index delay = 4 mins, = approx spacing between field lines of 7.5 Earth radii
-# Number of delays = number of fieldlines having an appreciable input, 7 worked best for DMDc
-if u.ndim == 1:
-    u = u[:, np.newaxis]  # Reshape to (num_rows, 1)
-num_rows, num_features = u.shape
-
-num_delays = len(delays)
-delayed_input = np.zeros((num_rows, num_features * num_delays)) # Initialize final matrix
-
-for i, delay in enumerate(delays):
-    start_col = i * num_features # Start column for this delay
-    end_col = start_col + num_features # End column for this delay
-    
-    if delay == 0:
-        # No delay; copy of original input
-        delayed_input[:, start_col:end_col] = u
-    else:
-        # Shifts each block of inputs by the number of indexes given above.
-        # Values before input = 0
-        delayed = np.zeros_like(u)
-        delayed[delay:] = u[:-delay]
-        delayed_input[:, start_col:end_col] = delayed
+# Delay the input data
+u_delayed = delay_control_data(u, nr_of_delays = 1, delay_indexes = 1)
 
 
 #spatio_temporal_grid = 
@@ -607,10 +672,10 @@ mod = ps.SINDy(optimizer = optimizer,
                differentiation_method=differentiation_method)
 
 
-mod.fit(x = x, t = t, u = delayed_input)
+mod.fit(x = x, t = t, u = u_delayed)
 
 mod.print()
-print(mod.score(x, t, u = u))
+print(mod.score(x, t, u = u_delayed))
 #%%
 
 plt.plot(x)

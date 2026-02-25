@@ -623,7 +623,7 @@ optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(threshold=0.010),
 feature_names = None
 
 # Finite difference amplifies noise in data.
-differentiation_method = ps.FiniteDifference() 
+differentiation_method = ps.SmoothedFiniteDifference()
 
 """
 3 timesteps of the full system needs 1.92 TiB (1.1TB) RAM to model.
@@ -645,7 +645,7 @@ J_10 = Theta[training_start:training_end, 52-50]
 # +50 seems to have the greatest positive effect on model
 # +50 = one step "to the right", +1 = one step "down"
 u = np.vstack((Bs[training_start:training_end], 
-               Theta[training_start:training_end, pos_index + 50],
+               #Theta[training_start:training_end, pos_index + 50],
                #HWR[training_start:training_end]
                   )).T
 
@@ -656,8 +656,9 @@ u_delayed = delay_control_data(u, nr_of_delays = 1, delay_indexes = 1)
 #spatio_temporal_grid = 
 
 lib = ps.PDELibrary(function_library=ps.PolynomialLibrary(degree=3),
-                    derivative_order = 0, 
-                    include_interaction = True, include_bias = True)
+                    derivative_order = 1, temporal_grid=t,
+                    include_interaction = True, include_bias = True,
+                    implicit_terms=True)
 
 #input_lib = ps.CustomLibrary()
 
@@ -678,7 +679,16 @@ mod.print()
 print(mod.score(x, t, u = u_delayed))
 #%%
 
+diff = ps.SmoothedFiniteDifference(smoother_kws={"window_length" : 10})
+x_dot = diff._differentiate(x, t)
+
+plt.plot(x_dot[:2000])
+plt.show()
+
+#%%
 plt.plot(x)
+plt.show()
+plt.plot(x_dot)
 plt.show()
 
 plt.plot(u)

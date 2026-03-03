@@ -24,6 +24,7 @@ from sklearn.metrics import r2_score
 from matplotlib.animation import FuncAnimation
 import math
 from itertools import groupby
+import glob
 
 
 """
@@ -37,11 +38,14 @@ They more than likely do
 
 AMPERE_PATH = "/nfs/revontuli/data/bjorn/Ampere"
 IMF_PATH = "/nfs/revontuli/data/bjorn/ACE/B_IMF"
+P_SW_PATH = "/nfs/revontuli/data/bjorn/ACE/P_SW"
 
 amp_root = Path(AMPERE_PATH)
 imf_root = Path(IMF_PATH)
+p_sw_root = Path(P_SW_PATH)
 
 fontsize = 20
+
 
 # 2009 has incomplete data
 def read_Jpar(from_year_index, nr_days):
@@ -264,46 +268,6 @@ def read_files(directory, start_year=None, end_year=None):
         return pd.DataFrame()
 
 
-def train_SINDY(input_dat, dt, training_start, training_end,
-                feature_library, optimizer, feature_names, differentiation_method):
-    """
-    Parameters
-    ----------
-    input_dat : nparray
-        measurements of system states.
-    control_dat : TYPE
-        DESCRIPTION.
-    feature_library : TYPE
-        DESCRIPTION.
-    optimizer : TYPE
-        DESCRIPTION.
-
-    Returns
-    -------
-    model : 
-
-    """
-    try:
-        X = input_dat[training_start:training_end, :]
-    except IndexError:
-        X = input_dat[training_start:training_end]
-    
-    """
-    model = ps.SINDy(
-        differentiation_method = differentiation_method,
-        feature_library = feature_library, #feature_names = feature_names
-        optimizer = optimizer
-        )
-    """
-    
-    model = ps.SINDy(optimizer = optimizer, feature_library=feature_library,
-                     differentiation_method=differentiation_method)
-    model.fit(X, t = dt, feature_names = feature_names)
-    
-    model.print()
-    
-    return model
-
 def Milan_coupling(By, Bz, Vx):
     """
     From Milan et al in JGR, https://doi.org/10.1029/2011JA017082
@@ -393,36 +357,61 @@ def delay_control_data(control_dat, nr_of_delays, delay_indexes):
 
     return delayed_input
 
+def find_nans(data, interpolate_single_nans=False):
+    # Finds the lengths of nan intervals and non-nan intervals
+    start_nan_indices = [] # Indices for every first nan in a given nan stretch
+    end_nan_indices = []   # Indices for every last nan in a given nan stretch
+    
+    if np.isnan(data[0]): # Checks if first index is nan
+        start_nan_indices.append(0)
+        
+    for i in range(len(data)):
+        if np.isnan(data[i]) and not np.isnan(data[i - 1]):
+            start_nan_indices.append(i)
+           
+        if not np.isnan(data[i]) and np.isnan(data[i - 1]):
+            end_nan_indices.append(i)
+        
+    if np.isnan(data[-1]): # Checks if last index is nan
+        end_nan_indices.append(len(data) - 1)
+        
+    start_nan_indices = np.array(start_nan_indices)
+    end_nan_indices = np.array(end_nan_indices)   
+
+    nan_lengths = end_nan_indices - start_nan_indices # Length of any given nan stretch
+    no_nan_lengths = np.zeros_like(nan_lengths)       # Length of any given clean data stretch
+
+    for i in range(len(nan_lengths)):
+        try:
+            no_nan_lengths[i] = start_nan_indices[i + 1] - start_nan_indices[i] - nan_lengths[i]
+        except IndexError:
+            break
+    
+    if interpolate_single_nans:
+        # Find single NaN stretches
+        single_nan_mask = nan_lengths == 1
+        single_nan_indices = start_nan_indices[single_nan_mask]
+        # Interpolate only at these indices
+        data[single_nan_indices] = (data[single_nan_indices - 1] + data[single_nan_indices + 1]) / 2
+        # Remove single NaN stretches from the arrays
+        start_nan_indices = start_nan_indices[~single_nan_mask]
+        end_nan_indices = end_nan_indices[~single_nan_mask]
+        nan_lengths = nan_lengths[~single_nan_mask]
+        no_nan_lengths = no_nan_lengths[~single_nan_mask]
+        print(f"Interpolated over {len(single_nan_indices)} single nans.")
+        
+    print(f"This data contains {np.sum(nan_lengths)} nan indices, over {len(nan_lengths)} unique stretches")
+    print(f"On average 1 nan stretch every {int(len(data)/len(nan_lengths))} data points")
+    return data, start_nan_indices, end_nan_indices, nan_lengths, no_nan_lengths
 
 #%%
 Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 5, nr_days = 365)
 #%%
 Jpar_downsampled = Jpar[::2]
 
-# Finds the lengths of nan intervals and non-nan intervals
-start_nan_indices = []
-end_nan_indices = []
+Jpar_downsampled, nan_start_Jpar, nan_end_Jpar, nan_lengths_Jpar, no_nan_lengths_Jpar = find_nans(Jpar_downsampled[:, 0],
+                                                                                interpolate_single_nans=True)
 
-for i in range(len(Jpar_downsampled)):
-    if np.isnan(Jpar_downsampled[i, 0]) and not np.isnan(Jpar_downsampled[i - 1, 0]):
-        start_nan_indices.append(i)
-    
-    if not np.isnan(Jpar_downsampled[i, 0]) and np.isnan(Jpar_downsampled[i - 1, 0]):
-        end_nan_indices.append(i)
-
-start_nan_indices = np.array(start_nan_indices)
-end_nan_indices = np.array(end_nan_indices)   
-
-nan_lengths = end_nan_indices - start_nan_indices
-no_nan_lengths = np.zeros_like(nan_lengths)
-
-for i in range(len(nan_lengths)):
-    try:
-        no_nan_lengths[i] = start_nan_indices[i + 1] - start_nan_indices[i] - nan_lengths[i]
-    except IndexError:
-        break
-
-print(np.sum(nan_lengths))
 #%%
 year_data = read_files(IMF_PATH, start_year=2013, end_year=2013)
 year_data_interp = year_data.interpolate(method = "linear") #dt = 4 min 
@@ -431,70 +420,53 @@ year_data_interp = year_data.interpolate(method = "linear") #dt = 4 min
 """
 2012, 2016 & 2020 were leap-years
 """
+#%%
+# Reads in additional ACE parameters
+# File names are nonsensical, therefore all 14 years have to be read in at once and then sorted
+# Luckily the reading is fairly quick.
 
-# Reading in alternate Solar Wind parameters (Vx, y, z) Hard coded for 2010
-SW_data = pd.read_csv("ASC8YJ061", skiprows = 31, sep = "\s+", 
-                      names=["Year", "day", "hour", "min", "sec", 
-                             "VGSM_X", "VGSM_Y", "VGSM_Z"])
-SW_data[SW_data == -9999.9] = np.nan
+p_sw_file_list = glob.glob("/nfs/revontuli/data/bjorn/ACE/P_SW/*.zip")  # Reads any zip file
+data_frames = []
+for file in p_sw_file_list: # Reads in the zip files
+    df = pd.read_csv(
+        file,
+        skiprows=31,
+        delimiter=r"\s+",
+        names=["Year", "day", "hour", "min", "sec",
+               "Density_proton", "T_proton",
+               "VGSE_X", "VGSE_Y", "VGSE_Z",
+               "VGSM_X", "VGSM_Y", "VGSM_Z",
+               "GSE_X", "GSE_Y", "GSE_Z"]
+    )
+    data_frames.append(df)
+combined_p_sw_data = pd.concat(data_frames, ignore_index=True) # Concats the years, sorts them below
+P_SW_data = combined_p_sw_data.sort_values(by=["Year", "day", "hour", "min", "sec"]).reset_index(drop=True)
+print(f"Pre-resampled P_SW shape: {P_SW_data.shape}") # 1 sample every 64 seconds
 
-SW_data_interp = SW_data.interpolate(method = "linear")
+# Convert -9999 to nan
+P_SW_data[P_SW_data == -9999.9] = np.nan
 
-SW_data_interp["datetime"] = pd.to_datetime(SW_data_interp["Year"].astype(str)) + pd.to_timedelta(SW_data_interp["day"] - 1, unit="D") \
-    + pd.to_timedelta(SW_data_interp["hour"], unit="h") + pd.to_timedelta(SW_data_interp["min"], unit="m") \
-        + pd.to_timedelta(SW_data_interp["sec"], unit="s")
-
-SW_data_interp = SW_data_interp.drop(columns=["Year", "day", "hour", "min", "sec"])
-SW_data_interp.set_index("datetime", inplace=True)
-
-SW_dat_dow = SW_data_interp.resample("4min")
-SW_dat_dow = SW_dat_dow.mean()
-
+# add DatetimeIndex for easy resampling
+P_SW_data["datetime"] = pd.to_datetime(P_SW_data["Year"].astype(str)) + pd.to_timedelta(P_SW_data["day"] - 1, unit="D") \
+    + pd.to_timedelta(P_SW_data["hour"], unit="h") + pd.to_timedelta(P_SW_data["min"], unit="m") \
+        + pd.to_timedelta(P_SW_data["sec"], unit="s")
+     
+P_SW_data = P_SW_data.drop(columns=["Year", "day", "hour", "min", "sec"]) # Drop old date columns
+P_SW_data.set_index("datetime", inplace=True)
+#%%
+# Resample to 4min:
+P_SW_data = P_SW_data.resample("4min")
+P_SW_data = P_SW_data.mean()
 
 #%%
+P_SW_interp, nan_start_n, nan_end_n, nan_lengths_n, no_nan_lengths_n = find_nans(np.array(P_SW_data["Density_proton"]),
+                                                                                 interpolate_single_nans=True)
 
-
-def Milan_coupling(By, Bz, Vx):
-    """
-    From Milan et al in JGR, https://doi.org/10.1029/2011JA017082
-    ONLY TO BE USED FOR NON-SUBSTORM PERIODS
-    Assumes negligent night-side reconnection during non-substorm intervals
-    
-    
-    Params:
-        Bx, By, Bz: 
-            type: ndarray
-            GSM coordinates
-    
-    Variables
-    ---------
-    B_yz : B_yz**2 = By**2 + Bz**2
-    """
-    R_E = 6357 * 1000
-    Lambda = 3.3 * 10**5    # m**(2/3) s**(1/3)
-    phi_d = np.zeros_like(Vx)
-    c = 3e8
-    theta = np.arctan2(By, Bz)
-    Byz = np.sqrt(By**2 + Bz**2)
-    # Have to force each Vx to float for calulation to work
-    # DO NOT TOUCH
-    for i in range(len(Vx)):
-        L_eff = (3.8 * R_E * (float(Vx[i])/(4 * 10**5 ))**(1/3)).real
-        
-        phi_d[i] = L_eff * float(Vx[i]) * Byz[i] * np.sin(0.5 * theta[i])**(9/2) # eq 15
-    
-    
-    #phi_d = Lambda * np.abs(Vx)**(4/3) * Byz * np.sin(1/2 * theta)**(9/2) # eq 14
-    
-    
-    F_max = phi_d/c
-    
-    return F_max
+#%%
 
 nan_pos = np.where(np.isnan(Jpar_downsampled[:, 0]))[0]
 
 rows_with_nan = np.where(np.isnan(Jpar_downsampled).any(axis=1))[0]
-
 
 # Read in control data
 Bx = np.array(year_data_interp["Bgsm_x"][:Jpar_downsampled.shape[0]])
@@ -508,13 +480,13 @@ By = np.delete(By, rows_with_nan)
 Bz = np.delete(Bz, rows_with_nan)
 """
 
-Vx = np.array(SW_dat_dow["VGSM_X"])[:Jpar_downsampled.shape[0]]
+Vx = np.array(P_SW_data["VGSM_X"])[:Jpar_downsampled.shape[0]]
 
-Vx = np.delete(Vx, nan_pos)
+#Vx = np.delete(Vx, nan_pos)
 
 v = Vx
 
-Jpar_downsampled = np.delete(Jpar_downsampled, rows_with_nan, axis = 0)
+#Jpar_downsampled = np.delete(Jpar_downsampled, rows_with_nan, axis = 0)
 
 """
 Fit some sort of polynomial to the smoothed n points before and after a nan interval

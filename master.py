@@ -357,7 +357,7 @@ def delay_control_data(control_dat, nr_of_delays, delay_indexes):
 
     return delayed_input
 
-def find_nans(data, interpolate_single_nans=False):
+def find_nans(data, print_=True):
     # Finds the lengths of nan intervals and non-nan intervals
     start_nan_indices = [] # Indices for every first nan in a given nan stretch
     end_nan_indices = []   # Indices for every last nan in a given nan stretch
@@ -385,23 +385,50 @@ def find_nans(data, interpolate_single_nans=False):
         try:
             no_nan_lengths[i] = start_nan_indices[i + 1] - start_nan_indices[i] - nan_lengths[i]
         except IndexError:
-            break
+            break 
     
-    if interpolate_single_nans:
-        # Find single NaN stretches
-        single_nan_mask = nan_lengths == 1
-        single_nan_indices = start_nan_indices[single_nan_mask]
-        # Interpolate only at these indices
-        data[single_nan_indices] = (data[single_nan_indices - 1] + data[single_nan_indices + 1]) / 2
-        # Remove single NaN stretches from the arrays
-        start_nan_indices = start_nan_indices[~single_nan_mask]
-        end_nan_indices = end_nan_indices[~single_nan_mask]
-        nan_lengths = nan_lengths[~single_nan_mask]
-        no_nan_lengths = no_nan_lengths[~single_nan_mask]
-        print(f"Interpolated over {len(single_nan_indices)} single nans.")
-        
-    print(f"This data contains {np.sum(nan_lengths)} nan indices, over {len(nan_lengths)} unique stretches")
+    if print_:
+        print(f"This data contains {np.sum(nan_lengths)} nan indices, over {len(nan_lengths)} unique stretches")
+        print(f"On average 1 nan stretch every {int(len(data)/len(nan_lengths))} data points")
+    return start_nan_indices, end_nan_indices, nan_lengths, no_nan_lengths
+
+
+def interpolate_nans(data, max_nan_length):
+    
+    start_nan_indices, end_nan_indices, nan_lengths, no_nan_lengths = find_nans(data, print_ = False)
+    
+    if len(start_nan_indices) == 0:
+        print("No NaNs! You lucky bastard.")
+        return data, start_nan_indices, end_nan_indices, nan_lengths, no_nan_lengths
+    
+    # Find NaN stretches smaller than the specified length
+    small_nan_mask = nan_lengths <= max_nan_length  # Mask for stretches smaller than max_nan_length
+    small_nan_indices = start_nan_indices[small_nan_mask]  # Start indices of small NaN stretches
+    # Interpolate over each small NaN stretch
+    for start, length in zip(small_nan_indices, nan_lengths[small_nan_mask]):
+        # Ensure the stretch is not at the boundaries of the array
+        if start == 0 or start + length >= len(data):
+            continue
+        # Interpolate linearly over the range of NaNs
+        data[start:start + length] = np.linspace(
+            data[start - 1],  # Value before the NaN stretch
+            data[start + length],  # Value after the NaN stretch
+            length + 2  # Include the boundary points
+        )[1:-1]  # Exclude the boundary points (keep only interpolated values)
+    # Remove these small NaN stretches from the arrays
+    start_nan_indices = start_nan_indices[~small_nan_mask]
+    end_nan_indices = end_nan_indices[~small_nan_mask]
+    nan_lengths = nan_lengths[~small_nan_mask]
+    no_nan_lengths = no_nan_lengths[~small_nan_mask]
+    
+    start_nan_indices, end_nan_indices, nan_lengths, no_nan_lengths = find_nans(data, print_ = False)
+    
+    print() 
+    print(f"Interpolated over {np.sum(small_nan_mask)} NaNs within stretches smaller than {max_nan_length} indices.")
+    print()
+    print(f"After interpolation this data contains {np.sum(nan_lengths)} nan indices, over {len(nan_lengths)} unique stretches")
     print(f"On average 1 nan stretch every {int(len(data)/len(nan_lengths))} data points")
+    
     return data, start_nan_indices, end_nan_indices, nan_lengths, no_nan_lengths
 
 #%%
@@ -409,17 +436,21 @@ Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_ind
 #%%
 Jpar_downsampled = Jpar[::2]
 
-Jpar_downsampled, nan_start_Jpar, nan_end_Jpar, nan_lengths_Jpar, no_nan_lengths_Jpar = find_nans(Jpar_downsampled[:, 0],
-                                                                                interpolate_single_nans=True)
+Jpar_downsampled, nan_start_Jpar, nan_end_Jpar, nan_lengths_Jpar, no_nan_lengths_Jpar = interpolate_nans(Jpar_downsampled[:, 0],
+                                                                                max_nan_length=1)
 
 #%%
 year_data = read_files(IMF_PATH, start_year=2013, end_year=2013)
-year_data_interp = year_data.interpolate(method = "linear") #dt = 4 min 
+#year_data_interp = year_data.interpolate(method = "linear") #dt = 4 min 
 #year_data = np.array(year_data_interp)
 
 """
 2012, 2016 & 2020 were leap-years
 """
+
+#%%
+print(Jpar.shape)
+
 #%%
 # Reads in additional ACE parameters
 # File names are nonsensical, therefore all 14 years have to be read in at once and then sorted
@@ -453,25 +484,40 @@ P_SW_data["datetime"] = pd.to_datetime(P_SW_data["Year"].astype(str)) + pd.to_ti
      
 P_SW_data = P_SW_data.drop(columns=["Year", "day", "hour", "min", "sec"]) # Drop old date columns
 P_SW_data.set_index("datetime", inplace=True)
+
+
 #%%
+
+P_SW_interp, nan_start_n, nan_end_n, nan_lengths_n, no_nan_lengths_n = interpolate_nans(P_SW_data,
+                                                                                        max_nan_length=5)
+#%%
+print(np.mean(no_nan_lengths_n))
+#%%
+
 # Resample to 4min:
-P_SW_data = P_SW_data.resample("4min")
-P_SW_data = P_SW_data.mean()
+P_SW_data_interp = P_SW_interp.resample("4min").mean()
+
+"""
+pandas.resample() treats NaN as 0.
+e.g mean([1, NaN, 3]) = 2, where mean([NaN, NaN, NaN]) = NaN
+"""
+#%%
+
+nan_start_overlap = np.where(nan_start_Jpar == nan_start_n)
+nan_end_overlap = np.where(nan_start_Jpar == nan_start_n)
+
+usable_data = 0
 
 #%%
-P_SW_interp, nan_start_n, nan_end_n, nan_lengths_n, no_nan_lengths_n = find_nans(np.array(P_SW_data["Density_proton"]),
-                                                                                 interpolate_single_nans=True)
 
-#%%
+#nan_pos = np.where(np.isnan(Jpar_downsampled[:, 0]))[0]
 
-nan_pos = np.where(np.isnan(Jpar_downsampled[:, 0]))[0]
-
-rows_with_nan = np.where(np.isnan(Jpar_downsampled).any(axis=1))[0]
+#rows_with_nan = np.where(np.isnan(Jpar_downsampled).any(axis=1))[0]
 
 # Read in control data
-Bx = np.array(year_data_interp["Bgsm_x"][:Jpar_downsampled.shape[0]])
-By = np.array(year_data_interp["Bgsm_y"][:Jpar_downsampled.shape[0]])
-Bz = np.array(year_data_interp["Bgsm_z"][:Jpar_downsampled.shape[0]])
+Bx = np.array(year_data["Bgsm_x"][:Jpar_downsampled.shape[0]])
+By = np.array(year_data["Bgsm_y"][:Jpar_downsampled.shape[0]])
+Bz = np.array(year_data["Bgsm_z"][:Jpar_downsampled.shape[0]])
 Bz[Bz<-200] = 0
 
 """
@@ -481,6 +527,7 @@ Bz = np.delete(Bz, rows_with_nan)
 """
 
 Vx = np.array(P_SW_data["VGSM_X"])[:Jpar_downsampled.shape[0]]
+n = np.array(P_SW_interp)[:Jpar_downsampled.shape[0]]
 
 #Vx = np.delete(Vx, nan_pos)
 
@@ -521,15 +568,6 @@ for i in range(len(mult_)):
     
 plt.plot(mult_)
 plt.show()
-
-#%%
-plt.plot(Bz)
-plt.show()
-#%%
-
-plt.plot(Bs[:2000])
-plt.show()
-
 
 
 #%%

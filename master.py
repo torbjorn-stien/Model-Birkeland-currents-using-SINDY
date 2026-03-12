@@ -365,28 +365,30 @@ def find_nans(data, print_=True):
     if np.isnan(data[0]): # Checks if first index is nan
         start_nan_indices.append(0)
         
-    for i in range(len(data)):
+    for i in range(1, len(data)):
         if np.isnan(data[i]) and not np.isnan(data[i - 1]):
             start_nan_indices.append(i)
            
         if not np.isnan(data[i]) and np.isnan(data[i - 1]):
+            #print(i)
             end_nan_indices.append(i)
         
     if np.isnan(data[-1]): # Checks if last index is nan
         end_nan_indices.append(len(data) - 1)
-        
+    
+    #print(start_nan_indices)
+    #print(end_nan_indices)
     start_nan_indices = np.array(start_nan_indices)
     end_nan_indices = np.array(end_nan_indices)   
-
+    
+    
+    
     nan_lengths = end_nan_indices - start_nan_indices # Length of any given nan stretch
     no_nan_lengths = np.zeros_like(nan_lengths)       # Length of any given clean data stretch
-
-    for i in range(len(nan_lengths)):
-        try:
-            no_nan_lengths[i] = start_nan_indices[i + 1] - start_nan_indices[i] - nan_lengths[i]
-        except IndexError:
-            break 
     
+    no_nan_lengths[:-1] = start_nan_indices[1:] - end_nan_indices[:-1]
+            
+            
     if print_:
         print(f"This data contains {np.sum(nan_lengths)} nan indices, over {len(nan_lengths)} unique stretches")
         print(f"On average 1 nan stretch every {int(len(data)/len(nan_lengths))} data points")
@@ -394,7 +396,7 @@ def find_nans(data, print_=True):
 
 
 def interpolate_nans(data, max_nan_length):
-    
+
     start_nan_indices, end_nan_indices, nan_lengths, no_nan_lengths = find_nans(data, print_ = False)
     
     if len(start_nan_indices) == 0:
@@ -436,8 +438,12 @@ Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_ind
 #%%
 Jpar_downsampled = Jpar[::2]
 
-Jpar_downsampled, nan_start_Jpar, nan_end_Jpar, nan_lengths_Jpar, no_nan_lengths_Jpar = interpolate_nans(Jpar_downsampled[:, 0],
-                                                                                max_nan_length=1)
+# If 1 column contains a nan, every column contains nan at the same place
+# find_nans() is bottlenecking, vectorize it at some point
+for column in range(Jpar_downsampled.shape[1]): 
+    Jpar_downsampled[:, column], nan_start_Jpar, nan_end_Jpar, 
+    nan_lengths_Jpar, no_nan_lengths_Jpar = interpolate_nans(Jpar_downsampled[:, column],
+                                                      max_nan_length=1)
 
 #%%
 year_data = read_files(IMF_PATH, start_year=2013, end_year=2013)
@@ -455,6 +461,7 @@ print(Jpar.shape)
 # Reads in additional ACE parameters
 # File names are nonsensical, therefore all 14 years have to be read in at once and then sorted
 # Luckily the reading is fairly quick.
+# 1 measurement every 64 seconds, 0.9375 samples pr. min
 
 p_sw_file_list = glob.glob("/nfs/revontuli/data/bjorn/ACE/P_SW/*.zip")  # Reads any zip file
 data_frames = []
@@ -485,17 +492,20 @@ P_SW_data["datetime"] = pd.to_datetime(P_SW_data["Year"].astype(str)) + pd.to_ti
 P_SW_data = P_SW_data.drop(columns=["Year", "day", "hour", "min", "sec"]) # Drop old date columns
 P_SW_data.set_index("datetime", inplace=True)
 
+#%%
+
+P_SW_filtered = P_SW_data.loc["2013-01-01":"2013-12-31"]
 
 #%%
 
-P_SW_interp, nan_start_n, nan_end_n, nan_lengths_n, no_nan_lengths_n = interpolate_nans(P_SW_data,
+n_interp, nan_start_n, nan_end_n, nan_lengths_n, no_nan_lengths_n = interpolate_nans(np.array(P_SW_filtered["Density_proton"]),
                                                                                         max_nan_length=5)
 #%%
 print(np.mean(no_nan_lengths_n))
 #%%
 
 # Resample to 4min:
-P_SW_data_interp = P_SW_interp.resample("4min").mean()
+#P_SW_data_interp = P_SW_interp.resample("4min").mean()
 
 """
 pandas.resample() treats NaN as 0.
@@ -515,10 +525,13 @@ usable_data = 0
 #rows_with_nan = np.where(np.isnan(Jpar_downsampled).any(axis=1))[0]
 
 # Read in control data
-Bx = np.array(year_data["Bgsm_x"][:Jpar_downsampled.shape[0]])
+Bx = np.array(year_data["Bgsm_x"][:Jpar_downsampled.shape[0]], dtype=complex)
 By = np.array(year_data["Bgsm_y"][:Jpar_downsampled.shape[0]])
 Bz = np.array(year_data["Bgsm_z"][:Jpar_downsampled.shape[0]])
 Bz[Bz<-200] = 0
+
+Bx[Bx<-100] = 0
+By[By<-100] = 0
 
 """
 Bx = np.delete(Bx, rows_with_nan)
@@ -526,8 +539,8 @@ By = np.delete(By, rows_with_nan)
 Bz = np.delete(Bz, rows_with_nan)
 """
 
-Vx = np.array(P_SW_data["VGSM_X"])[:Jpar_downsampled.shape[0]]
-n = np.array(P_SW_interp)[:Jpar_downsampled.shape[0]]
+Vx = np.array(P_SW_data["VGSM_X"], dtype=complex)[:Jpar_downsampled.shape[0]]
+n = np.array(n_interp, dtype=complex)[:Jpar_downsampled.shape[0]]
 
 #Vx = np.delete(Vx, nan_pos)
 
@@ -542,9 +555,13 @@ Jpar varies too much.
 """
 
 #%%
+
+print(np.any(np.isnan(Bz)))
+
+#%%
 reconnection_voltage = Milan_coupling(By, Bz, Vx)
 
-theta_c = np.arctan(By, Bz)
+theta_c = np.arctan2(By, Bz)
 
 sin_squared = np.sin(theta_c/2)**2
 sin_4th = np.sin(theta_c/2)**4
@@ -569,8 +586,11 @@ for i in range(len(mult_)):
 plt.plot(mult_)
 plt.show()
 
-
 #%%
+
+B_T = np.sqrt(Bx.real**2 + By**2 + Bz**2)
+B = Bz
+
 p = n * v**2/2
 
 epsilon_1 = v * B**2 * sin_4th
@@ -596,10 +616,18 @@ E_TL = n**(1/2) * v**2 * B_T * np.sin(theta_c/2)**6
 
 #%%
 
+e1_interp, nan_start_e1, nan_end_e1, nan_lengths_e1, no_nan_lengths_e1 = interpolate_nans(epsilon_1,
+                                                                                          max_nan_length=3)
+#%%
+print(np.mean(no_nan_lengths_e1))
+
+#%%
+
 print(f"Bx's shape: {Bx.shape}")
 
+
 # Stack control data to the end of system measurements matrix
-Theta = np.hstack((Jpar_downsampled, Bx[:, np.newaxis], By[:, np.newaxis], Bz[:, np.newaxis])) 
+Theta = np.hstack((Jpar_downsampled, Bx[:, np.newaxis], By[:, np.newaxis], Bz[:, np.newaxis])).real
                    #Vx[:, np.newaxis]))
 
 missing_index = int(missing_indices[0]/2)
@@ -654,14 +682,21 @@ J_10 = Theta[training_start:training_end, 52-50]
 # Bx[:training_end], By[:training_end],
 # +50 seems to have the greatest positive effect on model
 # +50 = one step "to the right", +1 = one step "down"
-u = np.vstack((Bs[training_start:training_end], 
+u = np.vstack((Bs[training_start:training_end].real,
+               epsilon_1[training_start:training_end].real
                #Theta[training_start:training_end, pos_index + 50],
                #HWR[training_start:training_end]
                   )).T
+#%%
+plt.plot(epsilon_1[training_start:training_end].real)
+#plt.xlim()
+#plt.ylim(20, -100)
+plt.show()
 
+
+#%%
 # Delay the input data
 u_delayed = delay_control_data(u, nr_of_delays = 1, delay_indexes = 1)
-
 
 #spatio_temporal_grid = 
 

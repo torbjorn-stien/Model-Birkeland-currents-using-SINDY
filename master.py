@@ -300,7 +300,6 @@ def Milan_coupling(By, Bz, Vx):
     
     #phi_d = Lambda * np.abs(Vx)**(4/3) * Byz * np.sin(1/2 * theta)**(9/2) # eq 14
     
-    
     F_max = phi_d/c
     
     return F_max
@@ -382,7 +381,6 @@ def find_nans(data, print_=True):
     end_nan_indices = np.array(end_nan_indices)   
     
     
-    
     nan_lengths = end_nan_indices - start_nan_indices # Length of any given nan stretch
     no_nan_lengths = np.zeros_like(nan_lengths)       # Length of any given clean data stretch
     
@@ -433,6 +431,107 @@ def interpolate_nans(data, max_nan_length):
     
     return data, start_nan_indices, end_nan_indices, nan_lengths, no_nan_lengths
 
+
+def find_overlapping_clean_data(arrays, min_length, print_=True):
+    """
+    Find stretches of clean data that overlap between multiple arrays.
+    
+    Parameters:
+    -----------
+    arrays : list of numpy arrays
+        List of arrays to compare (all should have the same length)
+    print_ : bool
+        Whether to print summary information
+    min_length : int
+        Minimum length of clean segments to return (segments shorter than this are filtered out)
+    
+    Returns:
+    --------
+    clean_starts : numpy array
+        Start indices of overlapping clean segments (meeting min_length requirement)
+    clean_ends : numpy array
+        End indices of overlapping clean segments (meeting min_length requirement)
+    clean_lengths : numpy array
+        Lengths of overlapping clean segments (meeting min_length requirement)
+    """
+    
+    # Check that all arrays have the same length
+    lengths = [len(arr) for arr in arrays]
+    if len(set(lengths)) != 1:
+        raise ValueError("All arrays must have the same length")
+    
+    array_length = lengths[0]
+    
+    # Create a combined mask where True means ALL arrays have non-NaN at that position
+    # Start with all True, then combine with logical AND for each array
+    combined_clean_mask = np.ones(array_length, dtype=bool)
+    
+    if print_:
+        print("\nIndividual array clean positions:")
+    
+    for i, arr in enumerate(arrays):
+        # For each array, positions are clean if they are NOT NaN
+        array_clean = ~np.isnan(arr)
+        combined_clean_mask = combined_clean_mask & array_clean
+        
+        if print_:
+            n_clean = np.sum(array_clean)
+            clean_indices = np.where(array_clean)[0]
+            print(f"Array {i+1}: {n_clean} clean data points ({n_clean/array_length*100:.1f}%)")
+            print(f"  Clean indices: {clean_indices}")
+    
+    # Now find contiguous segments in the combined clean mask
+    n_combined_clean = np.sum(combined_clean_mask)
+    if print_:
+        print(f"\nCombined: {n_combined_clean} positions clean in ALL arrays ({n_combined_clean/array_length*100:.1f}%)")
+        print(f"Combined clean mask: {combined_clean_mask}")
+    
+    if n_combined_clean == 0:
+        if print_:
+            print("No overlapping clean segments found")
+        return np.array([]), np.array([]), np.array([])
+    
+    # Find boundaries where clean status changes
+    # Add sentinel values at start and end to handle edge cases
+    padded_mask = np.concatenate([[0], combined_clean_mask, [0]])
+    
+    # Find transitions using convolution for cleaner detection
+    # diff will be 1 for start of segment (0->1), -1 for end of segment (1->0)
+    transitions = np.diff(padded_mask)
+    
+    # Find start indices (where transition is 1)
+    clean_starts = np.where(transitions == 1)[0]
+    
+    # Find end indices (where transition is -1)
+    clean_ends = np.where(transitions == -1)[0]
+    
+    # Calculate all lengths
+    all_clean_lengths = clean_ends - clean_starts
+    
+    # Filter segments based on min_length
+    long_enough_mask = all_clean_lengths >= min_length
+    
+    clean_starts = clean_starts[long_enough_mask]
+    clean_ends = clean_ends[long_enough_mask]
+    clean_lengths = all_clean_lengths[long_enough_mask]
+    
+    if print_:
+        print(f"\nFound {len(all_clean_lengths)} total overlapping clean segments:")
+        for i, (start, end, length) in enumerate(zip(clean_starts_original if 'clean_starts_original' in locals() else clean_starts, 
+                                                     clean_ends_original if 'clean_ends_original' in locals() else clean_ends, 
+                                                     all_clean_lengths)):
+            status = " (filtered out)" if length < min_length else ""
+            print(f"  Segment {i+1}: indices {start}-{end-1} (length {length}){status}")
+        
+        print(f"\nAfter filtering (min_length={min_length}):")
+        if len(clean_lengths) > 0:
+            for i, (start, end, length) in enumerate(zip(clean_starts, clean_ends, clean_lengths)):
+                print(f"  Segment {i+1}: indices {start}-{end-1} (length {length})")
+        else:
+            print(f"  No segments meet the minimum length requirement of {min_length}")
+    
+    return clean_starts, clean_ends, clean_lengths
+
 #%%
 Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 5, nr_days = 365)
 #%%
@@ -441,8 +540,7 @@ Jpar_downsampled = Jpar[::2]
 # If 1 column contains a nan, every column contains nan at the same place
 # find_nans() is bottlenecking, vectorize it at some point
 for column in range(Jpar_downsampled.shape[1]): 
-    Jpar_downsampled[:, column], nan_start_Jpar, nan_end_Jpar, 
-    nan_lengths_Jpar, no_nan_lengths_Jpar = interpolate_nans(Jpar_downsampled[:, column],
+    Jpar_downsampled[:, column], nan_start_Jpar, nan_end_Jpar, nan_lengths_Jpar, no_nan_lengths_Jpar = interpolate_nans(Jpar_downsampled[:, column],
                                                       max_nan_length=1)
 
 #%%
@@ -498,10 +596,15 @@ P_SW_filtered = P_SW_data.loc["2013-01-01":"2013-12-31"]
 
 #%%
 
-n_interp, nan_start_n, nan_end_n, nan_lengths_n, no_nan_lengths_n = interpolate_nans(np.array(P_SW_filtered["Density_proton"]),
-                                                                                        max_nan_length=5)
-#%%
+interp_l = 5
+
+P_SW_filtered.loc[:, "Density_proton"], nan_start_n, nan_end_n, nan_lengths_n, no_nan_lengths_n = interpolate_nans(np.array(P_SW_filtered["Density_proton"]),
+                                                                                        max_nan_length=1)
+P_SW_filtered.loc[:, "VGSM_X"], nan_start_v, nan_end_v, nan_lengths_v, no_nan_lengths_v = interpolate_nans(np.array(P_SW_filtered["VGSM_X"]),
+                                                                                        max_nan_length=1)
+
 print(np.mean(no_nan_lengths_n))
+print(np.mean(no_nan_lengths_v))
 #%%
 
 # Resample to 4min:
@@ -539,8 +642,8 @@ By = np.delete(By, rows_with_nan)
 Bz = np.delete(Bz, rows_with_nan)
 """
 
-Vx = np.array(P_SW_data["VGSM_X"], dtype=complex)[:Jpar_downsampled.shape[0]]
-n = np.array(n_interp, dtype=complex)[:Jpar_downsampled.shape[0]]
+Vx = np.array(P_SW_filtered["VGSM_X"], dtype=complex)[::2][:Jpar_downsampled.shape[0]]
+n = np.array(P_SW_filtered["Density_proton"], dtype=complex)[::2][:Jpar_downsampled.shape[0]]
 
 #Vx = np.delete(Vx, nan_pos)
 
@@ -617,7 +720,7 @@ E_TL = n**(1/2) * v**2 * B_T * np.sin(theta_c/2)**6
 #%%
 
 e1_interp, nan_start_e1, nan_end_e1, nan_lengths_e1, no_nan_lengths_e1 = interpolate_nans(epsilon_1,
-                                                                                          max_nan_length=3)
+                                                                                          max_nan_length=1)
 #%%
 print(np.mean(no_nan_lengths_e1))
 
@@ -627,7 +730,7 @@ print(f"Bx's shape: {Bx.shape}")
 
 
 # Stack control data to the end of system measurements matrix
-Theta = np.hstack((Jpar_downsampled, Bx[:, np.newaxis], By[:, np.newaxis], Bz[:, np.newaxis])).real
+#Theta = np.hstack((Jpar_downsampled, Bx[:, np.newaxis], By[:, np.newaxis], Bz[:, np.newaxis])).real
                    #Vx[:, np.newaxis]))
 
 missing_index = int(missing_indices[0]/2)
@@ -670,13 +773,13 @@ training_start = 0
 training_end = 26680
 
 pos_index = 1130
-x = Theta[training_start:training_end, pos_index] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
+pos = Jpar_downsampled[training_start:training_end, pos_index] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
 t = np.arange(training_start * 10, training_end * 10,  10)
 
-J_21 = Theta[training_start:training_end, 52+1]
-J_01 = Theta[training_start:training_end, 52-1]
-J_12 = Theta[training_start:training_end, 52+50]
-J_10 = Theta[training_start:training_end, 52-50]
+J_21 = Jpar_downsampled[training_start:training_end, 52+1]
+J_01 = Jpar_downsampled[training_start:training_end, 52-1]
+J_12 = Jpar_downsampled[training_start:training_end, 52+50]
+J_10 = Jpar_downsampled[training_start:training_end, 52-50]
 
 # Deposited inputs
 # Bx[:training_end], By[:training_end],
@@ -687,19 +790,28 @@ u = np.vstack((Bs[training_start:training_end].real,
                #Theta[training_start:training_end, pos_index + 50],
                #HWR[training_start:training_end]
                   )).T
-#%%
-plt.plot(epsilon_1[training_start:training_end].real)
-#plt.xlim()
-#plt.ylim(20, -100)
-plt.show()
 
+#%%
+
+
+clean_start, clean_end, clean_len = find_overlapping_clean_data([Jpar_downsampled[:, pos_index], Bs, v],
+                                                                min_length = 200)
+
+#%%
+
+print(np.mean(clean_len))
 
 #%%
 # Delay the input data
 u_delayed = delay_control_data(u, nr_of_delays = 1, delay_indexes = 1)
 
 #spatio_temporal_grid = 
+"""
+X, T = np.meshgrid(x, t, indexing = "ij")
+XT = np.transpose([X, T])
 
+spatiotemporal_grid = XT
+"""
 lib = ps.PDELibrary(function_library=ps.PolynomialLibrary(degree=3),
                     derivative_order = 1, temporal_grid=t,
                     include_interaction = True, include_bias = True,

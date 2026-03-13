@@ -628,6 +628,7 @@ usable_data = 0
 #rows_with_nan = np.where(np.isnan(Jpar_downsampled).any(axis=1))[0]
 
 # Read in control data
+# Need complex for taking sqrt of negative values
 Bx = np.array(year_data["Bgsm_x"][:Jpar_downsampled.shape[0]], dtype=complex)
 By = np.array(year_data["Bgsm_y"][:Jpar_downsampled.shape[0]])
 Bz = np.array(year_data["Bgsm_z"][:Jpar_downsampled.shape[0]])
@@ -647,7 +648,8 @@ n = np.array(P_SW_filtered["Density_proton"], dtype=complex)[::2][:Jpar_downsamp
 
 #Vx = np.delete(Vx, nan_pos)
 
-v = Vx
+# Should redefine coordinates so Vx is always positive for calculating funcs like E_WAV_sqrt
+v = -Vx
 
 #Jpar_downsampled = np.delete(Jpar_downsampled, rows_with_nan, axis = 0)
 
@@ -772,14 +774,15 @@ differentiation_method = ps.SmoothedFiniteDifference()
 training_start = 0
 training_end = 26680
 
-pos_index = 1130
+pos_index = 1130 # Which position to attempt to model
 pos = Jpar_downsampled[training_start:training_end, pos_index] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
 t = np.arange(training_start * 10, training_end * 10,  10)
 
-J_21 = Jpar_downsampled[training_start:training_end, 52+1]
-J_01 = Jpar_downsampled[training_start:training_end, 52-1]
-J_12 = Jpar_downsampled[training_start:training_end, 52+50]
-J_10 = Jpar_downsampled[training_start:training_end, 52-50]
+# The closest measured currents to the "main" (attempted) modelled current
+J_21 = Jpar_downsampled[training_start:training_end, pos_index+1]
+J_01 = Jpar_downsampled[training_start:training_end, pos_index-1]
+J_12 = Jpar_downsampled[training_start:training_end, pos_index+50]
+J_10 = Jpar_downsampled[training_start:training_end, pos_index-50]
 
 # Deposited inputs
 # Bx[:training_end], By[:training_end],
@@ -812,11 +815,13 @@ XT = np.transpose([X, T])
 
 spatiotemporal_grid = XT
 """
+# Only temporal grid gives dx/dt = 1/2 dx/dt + 1/2 dx/dt, R² = 1
 lib = ps.PDELibrary(function_library=ps.PolynomialLibrary(degree=3),
                     derivative_order = 1, temporal_grid=t,
                     include_interaction = True, include_bias = True,
                     implicit_terms=True)
 
+# Various attempted libraries
 #input_lib = ps.CustomLibrary()
 
 combined_lib = ps.GeneralizedLibrary(libraries = [my_library, lib],
@@ -825,17 +830,20 @@ combined_lib = ps.GeneralizedLibrary(libraries = [my_library, lib],
 param_lib = ps.ParameterizedLibrary(feature_library=lib, parameter_library= lib,
                                     num_features = 3, num_parameters=2)
 
+# INitialize SINDy model
 mod = ps.SINDy(optimizer = optimizer,
                feature_library= combined_lib,
                differentiation_method=differentiation_method)
 
-
+# Fit SINDy model
 mod.fit(x = x, t = t, u = u_delayed)
 
+# Print the best fit approximation
 mod.print()
-print(mod.score(x, t, u = u_delayed))
+print(mod.score(x, t, u = u_delayed)) # R² score of model
 #%%
 
+# Differentiation method tests
 diff = ps.SmoothedFiniteDifference(smoother_kws={"window_length" : 10})
 x_dot = diff._differentiate(x, t)
 

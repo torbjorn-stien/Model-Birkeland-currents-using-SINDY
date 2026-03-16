@@ -480,7 +480,8 @@ def find_overlapping_clean_data(arrays, min_length, print_=True):
             print(f"Array {i+1}: {n_clean} clean data points ({n_clean/array_length*100:.1f}%)")
             print(f"  Clean indices: {clean_indices}")
     
-    # Now find contiguous segments in the combined clean mask
+    # Now find contiguous segments in the combined cl
+    #ean mask
     n_combined_clean = np.sum(combined_clean_mask)
     if print_:
         print(f"\nCombined: {n_combined_clean} positions clean in ALL arrays ({n_combined_clean/array_length*100:.1f}%)")
@@ -505,6 +506,7 @@ def find_overlapping_clean_data(arrays, min_length, print_=True):
     # Find end indices (where transition is -1)
     clean_ends = np.where(transitions == -1)[0]
     
+
     # Calculate all lengths
     all_clean_lengths = clean_ends - clean_starts
     
@@ -596,8 +598,6 @@ P_SW_filtered = P_SW_data.loc["2013-01-01":"2013-12-31"]
 
 #%%
 
-interp_l = 5
-
 P_SW_filtered.loc[:, "Density_proton"], nan_start_n, nan_end_n, nan_lengths_n, no_nan_lengths_n = interpolate_nans(np.array(P_SW_filtered["Density_proton"]),
                                                                                         max_nan_length=1)
 P_SW_filtered.loc[:, "VGSM_X"], nan_start_v, nan_end_v, nan_lengths_v, no_nan_lengths_v = interpolate_nans(np.array(P_SW_filtered["VGSM_X"]),
@@ -614,12 +614,6 @@ print(np.mean(no_nan_lengths_v))
 pandas.resample() treats NaN as 0.
 e.g mean([1, NaN, 3]) = 2, where mean([NaN, NaN, NaN]) = NaN
 """
-#%%
-
-nan_start_overlap = np.where(nan_start_Jpar == nan_start_n)
-nan_end_overlap = np.where(nan_start_Jpar == nan_start_n)
-
-usable_data = 0
 
 #%%
 
@@ -659,9 +653,9 @@ removes nan intervals, however can not be implemented for active periods as the
 Jpar varies too much.
 """
 
-#%%
+plt.plot(Bz)
+plt.show()
 
-print(np.any(np.isnan(Bz)))
 
 #%%
 reconnection_voltage = Milan_coupling(By, Bz, Vx)
@@ -679,17 +673,6 @@ HWR = v * Bs
 HWR[HWR == -0] = 0
 
 Bs_delayed = delay_control_data(Bs, 7, 1)
-
-mult_ = 1
-for i in range(7):
-    mult_ *= Bs_delayed[:, i]
-
-for i in range(len(mult_)):
-    if mult_[i] >= 0:
-        mult_[i - 7:i] = 0
-    
-plt.plot(mult_)
-plt.show()
 
 #%%
 
@@ -721,13 +704,6 @@ E_TL = n**(1/2) * v**2 * B_T * np.sin(theta_c/2)**6
 
 #%%
 
-e1_interp, nan_start_e1, nan_end_e1, nan_lengths_e1, no_nan_lengths_e1 = interpolate_nans(epsilon_1,
-                                                                                          max_nan_length=1)
-#%%
-print(np.mean(no_nan_lengths_e1))
-
-#%%
-
 print(f"Bx's shape: {Bx.shape}")
 
 
@@ -737,15 +713,7 @@ print(f"Bx's shape: {Bx.shape}")
 
 missing_index = int(missing_indices[0]/2)
 #Theta = Theta[:missing_index]
-print(f"Theta's shape: {Theta.shape}")
 
-#%%
-
-print(type(Theta))
-print(np.any(np.isnan(Bz)))
-
-plt.plot(Bz)
-plt.show()
 #%%
 
 # Define SINDY model parameters
@@ -778,35 +746,37 @@ pos_index = 1130 # Which position to attempt to model
 pos = Jpar_downsampled[training_start:training_end, pos_index] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
 t = np.arange(training_start * 10, training_end * 10,  10)
 
-# The closest measured currents to the "main" (attempted) modelled current
+# The closest measured currents to the "main" (attempted) modelled current, main current = J_11
 J_21 = Jpar_downsampled[training_start:training_end, pos_index+1]
 J_01 = Jpar_downsampled[training_start:training_end, pos_index-1]
 J_12 = Jpar_downsampled[training_start:training_end, pos_index+50]
 J_10 = Jpar_downsampled[training_start:training_end, pos_index-50]
 
-# Deposited inputs
-# Bx[:training_end], By[:training_end],
-# +50 seems to have the greatest positive effect on model
-# +50 = one step "to the right", +1 = one step "down"
-u = np.vstack((Bs[training_start:training_end].real,
-               epsilon_1[training_start:training_end].real
-               #Theta[training_start:training_end, pos_index + 50],
-               #HWR[training_start:training_end]
-                  )).T
-
-#%%
-
 
 clean_start, clean_end, clean_len = find_overlapping_clean_data([Jpar_downsampled[:, pos_index], Bs, v],
                                                                 min_length = 200)
 
-#%%
+Jpar_clean = []
+Bs_clean = []
+v_clean = []
 
-print(np.mean(clean_len))
+for i in range(len(clean_start)):
+    Jpar_clean.append(Jpar_downsampled[clean_start[i]:clean_end[i], pos_index])
+    Bs_clean.append(Bs[clean_start[i]:clean_end[i]])
+    v_clean.append(v[clean_start[i]:clean_end[i]])
 
-#%%
+
+X = Jpar_clean
+
+# Deposited inputs
+# Bx[:training_end], By[:training_end],
+# +50 seems to have the greatest positive effect on model
+# +50 = one step "to the right", +1 = one step "down"
+u = Bs_clean# [[Bs_clean], [v_clean]]
+
+
 # Delay the input data
-u_delayed = delay_control_data(u, nr_of_delays = 1, delay_indexes = 1)
+u_delayed = u#delay_control_data(u, nr_of_delays = 1, delay_indexes = 1)
 
 #spatio_temporal_grid = 
 """
@@ -836,11 +806,11 @@ mod = ps.SINDy(optimizer = optimizer,
                differentiation_method=differentiation_method)
 
 # Fit SINDy model
-mod.fit(x = x, t = t, u = u_delayed)
+mod.fit(x = X, t = dt,)# u = u_delayed)
 
 # Print the best fit approximation
 mod.print()
-print(mod.score(x, t, u = u_delayed)) # R² score of model
+print(mod.score(X, t, u = u_delayed)) # R² score of model
 #%%
 
 # Differentiation method tests

@@ -605,7 +605,6 @@ P_SW_filtered.loc[:, "VGSM_X"], nan_start_v, nan_end_v, nan_lengths_v, no_nan_le
 
 print(np.mean(no_nan_lengths_n))
 print(np.mean(no_nan_lengths_v))
-#%%
 
 # Resample to 4min:
 #P_SW_data_interp = P_SW_interp.resample("4min").mean()
@@ -664,7 +663,6 @@ theta_c = np.arctan2(By, Bz)
 
 sin_squared = np.sin(theta_c/2)**2
 sin_4th = np.sin(theta_c/2)**4
-#%%
 
 Bs = Bz
 Bs[Bs>0] = 0
@@ -674,7 +672,6 @@ HWR[HWR == -0] = 0
 
 Bs_delayed = delay_control_data(Bs, 7, 1)
 
-#%%
 
 B_T = np.sqrt(Bx.real**2 + By**2 + Bz**2)
 B = Bz
@@ -729,7 +726,7 @@ my_library = ps.CustomLibrary([lambda x: np.sin(x), #lambda x, y: np.sin(x + y),
 
 optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(threshold=0.010), 
                                  bagging=True, library_ensemble=True,
-                                 n_models = 30) # Default aggregator is median
+                                 n_models = 10) # Default aggregator is median
 
 feature_names = None
 
@@ -746,6 +743,7 @@ pos_index = 1130 # Which position to attempt to model
 pos = Jpar_downsampled[training_start:training_end, pos_index] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
 t = np.arange(training_start * 10, training_end * 10,  10)
 
+
 # The closest measured currents to the "main" (attempted) modelled current, main current = J_11
 J_21 = Jpar_downsampled[training_start:training_end, pos_index+1]
 J_01 = Jpar_downsampled[training_start:training_end, pos_index-1]
@@ -754,17 +752,28 @@ J_10 = Jpar_downsampled[training_start:training_end, pos_index-50]
 
 
 clean_start, clean_end, clean_len = find_overlapping_clean_data([Jpar_downsampled[:, pos_index], Bs, v],
-                                                                min_length = 200)
+                                                                min_length = 200, print_=False)
 
 Jpar_clean = []
 Bs_clean = []
 v_clean = []
 
 for i in range(len(clean_start)):
-    Jpar_clean.append(Jpar_downsampled[clean_start[i]:clean_end[i], pos_index])
-    Bs_clean.append(Bs[clean_start[i]:clean_end[i]])
-    v_clean.append(v[clean_start[i]:clean_end[i]])
+    Jpar_temp = Jpar_downsampled[clean_start[i]:clean_end[i], pos_index]
+    Bs_temp = Bs[clean_start[i]:clean_end[i]]
+    v_temp = v[clean_start[i]:clean_end[i]]
 
+    if Jpar_temp.ndim == 1:
+        Jpar_temp = Jpar_temp[:, np.newaxis]
+    if Bs_temp.ndim == 1:
+        Bs_temp = Bs_temp[:, np.newaxis]
+    if v_temp.ndim == 1:
+        v_temp[:, np.newaxis]
+    
+    Jpar_clean.append(Jpar_temp)
+    Bs_clean.append(Bs_temp)
+    v_clean.append(v_temp)
+    
 
 X = Jpar_clean
 
@@ -787,9 +796,9 @@ spatiotemporal_grid = XT
 """
 # Only temporal grid gives dx/dt = 1/2 dx/dt + 1/2 dx/dt, R² = 1
 lib = ps.PDELibrary(function_library=ps.PolynomialLibrary(degree=3),
-                    derivative_order = 1, temporal_grid=t,
+                   
                     include_interaction = True, include_bias = True,
-                    implicit_terms=True)
+                    implicit_terms=False)
 
 # Various attempted libraries
 #input_lib = ps.CustomLibrary()
@@ -806,11 +815,16 @@ mod = ps.SINDy(optimizer = optimizer,
                differentiation_method=differentiation_method)
 
 # Fit SINDy model
-mod.fit(x = X, t = dt,)# u = u_delayed)
+mod.fit(x = X, t = dt, u = u_delayed)
 
 # Print the best fit approximation
 mod.print()
-print(mod.score(X, t, u = u_delayed)) # R² score of model
+print(mod.score(X, dt, u = u_delayed)) # R² score of model
+#%%
+
+print("Shape of x:", np.shape(X))
+print("Shape of u:", np.shape(u_delayed))
+
 #%%
 
 # Differentiation method tests

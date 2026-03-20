@@ -506,7 +506,6 @@ def find_overlapping_clean_data(arrays, min_length, print_=True):
     # Find end indices (where transition is -1)
     clean_ends = np.where(transitions == -1)[0]
     
-
     # Calculate all lengths
     all_clean_lengths = clean_ends - clean_starts
     
@@ -533,6 +532,64 @@ def find_overlapping_clean_data(arrays, min_length, print_=True):
             print(f"  No segments meet the minimum length requirement of {min_length}")
     
     return clean_starts, clean_ends, clean_lengths
+
+
+def subset_data(arrays, min_length, overlap, force_overlap = False):
+    """
+    Parameters
+    ----------
+    arrays : list
+        list of arrays to be split
+    min_length : int
+        DESCRIPTION.
+    overlap : int
+        DESCRIPTION.
+
+    Returns
+    -------
+    clean_data_lists : list of lists
+        DESCRIPTION.
+
+    """
+    
+    # Find overlapping clean data stretches longer than min_len
+    clean_start, clean_end, clean_len = find_overlapping_clean_data(arrays, min_length, print_ = False)
+    
+    # Initialize data lists
+    clean_data_lists = [[] for _ in range(len(arrays))] 
+
+    # Splits the overlapping clean segments of data so that they all have the same length (the min_length)
+    # (so they can fit on the same temporal grid)
+    for i, array in enumerate(arrays):
+        for j in range(len(clean_len)):
+            
+            if clean_len[j] + overlap >= 2 * min_length: # If there is enough clean data for multiple subsets
+                # Discards excess clean data
+                nr_of_subsets = int((clean_len[j] - min_length)/(min_length - overlap) + 1) # Int rounds down
+
+                subset_start = clean_start[j] # First subset start
+                for k in range(nr_of_subsets):
+                    # Rolling window of clean data over the total available clean data in this stretch
+                    subset_end = subset_start + min_length
+                    
+                    data_temp = array[subset_start:subset_end]
+                    # Adds data to the corresponding list
+                    clean_data_lists[i].append(data_temp)
+                    # Moves the start index to the next subset
+                    subset_start += min_length - overlap
+                    
+            elif force_overlap == True: # Forces 2 subsets even if overlap is too small to allow 2 subsets
+                data_temp = array[clean_start[j]:clean_start[j] + min_length]
+                clean_data_lists[i].append(data_temp)
+                
+                data_temp = array[clean_end[j] - min_length:clean_end[j]]
+                clean_data_lists[i].append(data_temp)
+            
+            else: # Discards excess clean data
+                data_temp = array[clean_start[j]:clean_start[j] + min_length]
+                clean_data_lists[i].append(data_temp)
+    
+    return clean_data_lists
 
 #%%
 Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 5, nr_days = 365)
@@ -578,8 +635,7 @@ for file in p_sw_file_list: # Reads in the zip files
     )
     data_frames.append(df)
 combined_p_sw_data = pd.concat(data_frames, ignore_index=True) # Concats the years, sorts them below
-P_SW_data = combined_p_sw_data.sort_values(by=["Year", "day", "hour", "min", "sec"]).reset_index(drop=True)
-print(f"Pre-resampled P_SW shape: {P_SW_data.shape}") # 1 sample every 64 seconds
+P_SW_data = combined_p_sw_data.sort_values(by=["Year", "day", "hour", "min", "sec"]).reset_index(drop=True) # 1 sample every 64 seconds
 
 # Convert -9999 to nan
 P_SW_data[P_SW_data == -9999.9] = np.nan
@@ -743,7 +799,6 @@ pos_index = 1130 # Which position to attempt to model
 pos = Jpar_downsampled[training_start:training_end, pos_index] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
 t = np.arange(training_start * 10, training_end * 10,  10)
 
-
 # The closest measured currents to the "main" (attempted) modelled current, main current = J_11
 J_21 = Jpar_downsampled[training_start:training_end, pos_index+1]
 J_01 = Jpar_downsampled[training_start:training_end, pos_index-1]
@@ -754,26 +809,12 @@ J_10 = Jpar_downsampled[training_start:training_end, pos_index-50]
 clean_start, clean_end, clean_len = find_overlapping_clean_data([Jpar_downsampled[:, pos_index], Bs, v],
                                                                 min_length = 200, print_=False)
 
-Jpar_clean = []
-Bs_clean = []
-v_clean = []
+cleaned_subset_data = subset_data([Jpar_downsampled[:, pos_index], Bs, v], 200, 10)
 
-for i in range(len(clean_start)):
-    Jpar_temp = Jpar_downsampled[clean_start[i]:clean_end[i], pos_index]
-    Bs_temp = Bs[clean_start[i]:clean_end[i]]
-    v_temp = v[clean_start[i]:clean_end[i]]
+Jpar_clean = cleaned_subset_data[0]
+Bs_clean = cleaned_subset_data[1]
+v_clean = cleaned_subset_data[2]
 
-    if Jpar_temp.ndim == 1:
-        Jpar_temp = Jpar_temp[:, np.newaxis]
-    if Bs_temp.ndim == 1:
-        Bs_temp = Bs_temp[:, np.newaxis]
-    if v_temp.ndim == 1:
-        v_temp[:, np.newaxis]
-    
-    Jpar_clean.append(Jpar_temp)
-    Bs_clean.append(Bs_temp)
-    v_clean.append(v_temp)
-    
 
 X = Jpar_clean
 
@@ -793,7 +834,14 @@ X, T = np.meshgrid(x, t, indexing = "ij")
 XT = np.transpose([X, T])
 
 spatiotemporal_grid = XT
+
+pySINDy does not currently support different spatiotemporal grids for trajectories
+2 solutions (from github):
+    1. Interpolate trajectories over to a common temporal grid
+    2. Cut the trajectories down to the same length and define them as being on 
+    the same temporal grid
 """
+
 # Only temporal grid gives dx/dt = 1/2 dx/dt + 1/2 dx/dt, R² = 1
 lib = ps.PDELibrary(function_library=ps.PolynomialLibrary(degree=3),
                    

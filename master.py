@@ -603,7 +603,7 @@ for column in range(Jpar_downsampled.shape[1]):
                                                       max_nan_length=1)
 
 #%%
-year_data = read_files(IMF_PATH, start_year=2013, end_year=2013)
+year_data = read_files(IMF_PATH, start_year=2014, end_year=2014)
 #year_data_interp = year_data.interpolate(method = "linear") #dt = 4 min 
 #year_data = np.array(year_data_interp)
 
@@ -650,7 +650,7 @@ P_SW_data.set_index("datetime", inplace=True)
 
 #%%
 
-P_SW_filtered = P_SW_data.loc["2013-01-01":"2013-12-31"]
+P_SW_filtered = P_SW_data.loc["2014-01-01":"2014-12-31"]
 
 #%%
 
@@ -773,14 +773,14 @@ missing_index = int(missing_indices[0]/2)
 dt = 4
 
 my_library = ps.CustomLibrary([lambda x: np.sin(x), #lambda x, y: np.sin(x + y),
-                               lambda x: np.exp(x)])
+                               lambda x: np.exp(x), lambda x: 1/(1e-6 + x)])
 
 # SINDyCP uses ParametrizedLibrary, to create Theta(X, U) = Theta_feat(X) x Theta_par(U) 
 # Can be combined with weak formalized SINDy. Weak formulation can use WeakPDELibrary,
 # Otherwise I must construct the system rows by projecting data onto weak samples.
 # w_ik^v = \int_Omega_k theta(x;t) X^v(x;t) d^D x dt eq. 5 in SINDyCP paper
 
-optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(threshold=0.010), 
+optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(threshold=0.10), 
                                  bagging=True, library_ensemble=True,
                                  n_models = 10) # Default aggregator is median
 
@@ -793,42 +793,69 @@ differentiation_method = ps.SmoothedFiniteDifference()
 3 timesteps of the full system needs 1.92 TiB (1.1TB) RAM to model.
 """
 training_start = 0
-training_end = 26680
+training_end = 131400
 
 pos_index = 1130 # Which position to attempt to model
-pos = Jpar_downsampled[training_start:training_end, pos_index] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
-t = np.arange(training_start * 10, training_end * 10,  10)
+J_11 = Jpar_downsampled[training_start:training_end, pos_index] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
+#t = np.arange(training_start * 10, training_end * 10,  10)
 
 # The closest measured currents to the "main" (attempted) modelled current, main current = J_11
-J_21 = Jpar_downsampled[training_start:training_end, pos_index+1]
-J_01 = Jpar_downsampled[training_start:training_end, pos_index-1]
-J_12 = Jpar_downsampled[training_start:training_end, pos_index+50]
-J_10 = Jpar_downsampled[training_start:training_end, pos_index-50]
-
+J_21 = Jpar_downsampled[training_start:training_end, pos_index + 1]  # 1 down
+J_01 = Jpar_downsampled[training_start:training_end, pos_index - 1]  # 1 up
+J_12 = Jpar_downsampled[training_start:training_end, pos_index + 50] # 1 to the right
+J_10 = Jpar_downsampled[training_start:training_end, pos_index - 50] # 1 to the left
+# Diagonals:
+J_20 = Jpar_downsampled[training_start:training_end,pos_index - 50 - 1]
+J_00 = Jpar_downsampled[training_start:training_end,pos_index - 50 + 1]
+J_22 = Jpar_downsampled[training_start:training_end,pos_index + 50 - 1]
+J_02 = Jpar_downsampled[training_start:training_end,pos_index + 50 + 1]
 
 clean_start, clean_end, clean_len = find_overlapping_clean_data([Jpar_downsampled[:, pos_index], Bs, v],
                                                                 min_length = 200, print_=False)
 
-cleaned_subset_data = subset_data([Jpar_downsampled[:, pos_index], Bs, v], 200, 10)
+min_length = 200
+cleaned_subset_data = subset_data([J_01, J_11, J_21, Bs, v.real], min_length = min_length, overlap =10)
 
-Jpar_clean = cleaned_subset_data[0]
-Bs_clean = cleaned_subset_data[1]
-v_clean = cleaned_subset_data[2]
+J_01_clean = cleaned_subset_data[0]
+J_11_clean = cleaned_subset_data[1]
+J_21_clean = cleaned_subset_data[2]
+Bs_clean = cleaned_subset_data[3]
+v_clean = cleaned_subset_data[4]
 
+X = []
 
-X = Jpar_clean
+for i in range(len(J_11_clean)):
+    features = np.vstack((J_01_clean[i], J_11_clean[i], J_21_clean[i])).T
+    
+    X.append(features)
+
 
 # Deposited inputs
 # Bx[:training_end], By[:training_end],
 # +50 seems to have the greatest positive effect on model
 # +50 = one step "to the right", +1 = one step "down"
-u = Bs_clean# [[Bs_clean], [v_clean]]
-
+u = v_clean
+#for i in range(len(Bs_clean)):
+#    u.append([Bs_clean[i], v_clean[i]])
 
 # Delay the input data
+
+
+#X = [x.reshape(-1, 1) for x in X]  # Each array becomes (200, 1)
+#u = [u_.reshape(-1, 1) for u_ in u]  # Each array becomes (200, 1)
+
+
 u_delayed = u#delay_control_data(u, nr_of_delays = 1, delay_indexes = 1)
 
-#spatio_temporal_grid = 
+
+spatial_grid = np.arange(0, 3, step = 1)               # Tro to do a north-south line of 3 points
+temporal_grid = np.arange(0, 200 * dt, step = 1 * dt)
+
+spatial, temporal = np.meshgrid(spatial_grid, temporal_grid, indexing = "ij")
+
+spatio_temporal_grid = np.asarray([spatial, temporal]).T
+
+
 """
 X, T = np.meshgrid(x, t, indexing = "ij")
 XT = np.transpose([X, T])
@@ -843,10 +870,11 @@ pySINDy does not currently support different spatiotemporal grids for trajectori
 """
 
 # Only temporal grid gives dx/dt = 1/2 dx/dt + 1/2 dx/dt, R² = 1
-lib = ps.PDELibrary(function_library=ps.PolynomialLibrary(degree=3),
-                   
+lib = ps.WeakPDELibrary(function_library=ps.PolynomialLibrary(degree=3),
+                    spatiotemporal_grid=spatio_temporal_grid, # spatio_temporal_grid -> "tuple" has no attribute "shape"
                     include_interaction = True, include_bias = True,
-                    implicit_terms=False)
+                    implicit_terms=True, derivative_order = 0,
+                    )
 
 # Various attempted libraries
 #input_lib = ps.CustomLibrary()
@@ -859,7 +887,7 @@ param_lib = ps.ParameterizedLibrary(feature_library=lib, parameter_library= lib,
 
 # INitialize SINDy model
 mod = ps.SINDy(optimizer = optimizer,
-               feature_library= combined_lib,
+               feature_library= lib,
                differentiation_method=differentiation_method)
 
 # Fit SINDy model

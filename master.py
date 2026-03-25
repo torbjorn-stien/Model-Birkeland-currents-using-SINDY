@@ -592,18 +592,20 @@ def subset_data(arrays, min_length, overlap, force_overlap = False):
     return clean_data_lists
 
 #%%
-Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 5, nr_days = 365)
+# dt = 2 min
+Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 5, nr_days = 50) 
 #%%
-Jpar_downsampled = Jpar[::2]
+Jpar_downsampled = Jpar[::2] # dt = 4 min
 
+interp_length = 1
 # If 1 column contains a nan, every column contains nan at the same place
 # find_nans() is bottlenecking, vectorize it at some point
 for column in range(Jpar_downsampled.shape[1]): 
     Jpar_downsampled[:, column], nan_start_Jpar, nan_end_Jpar, nan_lengths_Jpar, no_nan_lengths_Jpar = interpolate_nans(Jpar_downsampled[:, column],
-                                                      max_nan_length=1)
+                                                      max_nan_length=interp_length)
 
 #%%
-year_data = read_files(IMF_PATH, start_year=2014, end_year=2014)
+year_data = read_files(IMF_PATH, start_year=2014, end_year=2014) # dt = 4min
 #year_data_interp = year_data.interpolate(method = "linear") #dt = 4 min 
 #year_data = np.array(year_data_interp)
 
@@ -648,16 +650,16 @@ P_SW_data["datetime"] = pd.to_datetime(P_SW_data["Year"].astype(str)) + pd.to_ti
 P_SW_data = P_SW_data.drop(columns=["Year", "day", "hour", "min", "sec"]) # Drop old date columns
 P_SW_data.set_index("datetime", inplace=True)
 
-#%%
+#%%epsilon_4
 
 P_SW_filtered = P_SW_data.loc["2014-01-01":"2014-12-31"]
 
 #%%
 
 P_SW_filtered.loc[:, "Density_proton"], nan_start_n, nan_end_n, nan_lengths_n, no_nan_lengths_n = interpolate_nans(np.array(P_SW_filtered["Density_proton"]),
-                                                                                        max_nan_length=1)
+                                                                                        max_nan_length=interp_length)
 P_SW_filtered.loc[:, "VGSM_X"], nan_start_v, nan_end_v, nan_lengths_v, no_nan_lengths_v = interpolate_nans(np.array(P_SW_filtered["VGSM_X"]),
-                                                                                        max_nan_length=1)
+                                                                                        max_nan_length=interp_length)
 
 print(np.mean(no_nan_lengths_n))
 print(np.mean(no_nan_lengths_v))
@@ -669,7 +671,7 @@ print(np.mean(no_nan_lengths_v))
 pandas.resample() treats NaN as 0.
 e.g mean([1, NaN, 3]) = 2, where mean([NaN, NaN, NaN]) = NaN
 """
-
+epsilon_4
 #%%
 
 #nan_pos = np.where(np.isnan(Jpar_downsampled[:, 0]))[0]
@@ -692,8 +694,11 @@ By = np.delete(By, rows_with_nan)
 Bz = np.delete(Bz, rows_with_nan)
 """
 
-Vx = np.array(P_SW_filtered["VGSM_X"], dtype=complex)[::2][:Jpar_downsampled.shape[0]]
-n = np.array(P_SW_filtered["Density_proton"], dtype=complex)[::2][:Jpar_downsampled.shape[0]]
+Vx_interp =  P_SW_filtered["VGSM_X"].resample("4min").mean()
+n_interp = P_SW_filtered["Density_proton"].resample("4min").mean()
+
+Vx = np.array(Vx_interp, dtype=complex)[:Jpar_downsampled.shape[0]]
+n = np.array(n_interp, dtype=complex)[:Jpar_downsampled.shape[0]]
 
 #Vx = np.delete(Vx, nan_pos)
 
@@ -780,7 +785,7 @@ my_library = ps.CustomLibrary([lambda x: np.sin(x), #lambda x, y: np.sin(x + y),
 # Otherwise I must construct the system rows by projecting data onto weak samples.
 # w_ik^v = \int_Omega_k theta(x;t) X^v(x;t) d^D x dt eq. 5 in SINDyCP paper
 
-optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(threshold=0.10), 
+optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(threshold=0.010), 
                                  bagging=True, library_ensemble=True,
                                  n_models = 10) # Default aggregator is median
 
@@ -793,7 +798,7 @@ differentiation_method = ps.SmoothedFiniteDifference()
 3 timesteps of the full system needs 1.92 TiB (1.1TB) RAM to model.
 """
 training_start = 0
-training_end = 131400
+training_end = len(Jpar_downsampled[:, 0])
 
 pos_index = 1130 # Which position to attempt to model
 J_11 = Jpar_downsampled[training_start:training_end, pos_index] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
@@ -814,7 +819,7 @@ clean_start, clean_end, clean_len = find_overlapping_clean_data([Jpar_downsample
                                                                 min_length = 200, print_=False)
 
 min_length = 200
-cleaned_subset_data = subset_data([J_01, J_11, J_21, Bs, v.real], min_length = min_length, overlap =10)
+cleaned_subset_data = subset_data([J_01, J_11, J_21, Bs, E_SR.real], min_length = min_length, overlap =1)
 
 J_01_clean = cleaned_subset_data[0]
 J_11_clean = cleaned_subset_data[1]
@@ -834,9 +839,16 @@ for i in range(len(J_11_clean)):
 # Bx[:training_end], By[:training_end],
 # +50 seems to have the greatest positive effect on model
 # +50 = one step "to the right", +1 = one step "down"
-u = v_clean
+#u = Bs_clean
 #for i in range(len(Bs_clean)):
 #    u.append([Bs_clean[i], v_clean[i]])
+
+
+u = []
+for i in range(len(Bs_clean)):
+    inputs =  np.vstack((Bs_clean[i], v_clean[i])).T
+    
+    u.append(inputs)
 
 # Delay the input data
 
@@ -853,9 +865,9 @@ temporal_grid = np.arange(0, 200 * dt, step = 1 * dt)
 
 spatial, temporal = np.meshgrid(spatial_grid, temporal_grid, indexing = "ij")
 
-spatio_temporal_grid = np.asarray([spatial, temporal]).T
+spatio_temporal_grid = np.stack((spatial, temporal), axis=-1)
 
-
+print("Shape of spatio_temporal_grid:", spatio_temporal_grid.shape)
 """
 X, T = np.meshgrid(x, t, indexing = "ij")
 XT = np.transpose([X, T])
@@ -868,10 +880,10 @@ pySINDy does not currently support different spatiotemporal grids for trajectori
     2. Cut the trajectories down to the same length and define them as being on 
     the same temporal grid
 """
-
+#H_xt = np.array([1, 2])  # Adjust these values if necessary
 # Only temporal grid gives dx/dt = 1/2 dx/dt + 1/2 dx/dt, R² = 1
 lib = ps.WeakPDELibrary(function_library=ps.PolynomialLibrary(degree=3),
-                    spatiotemporal_grid=spatio_temporal_grid, # spatio_temporal_grid -> "tuple" has no attribute "shape"
+                    spatiotemporal_grid=temporal_grid, #spatio_temporal_grid, # spatio_temporal_grid -> "tuple" has no attribute "shape"
                     include_interaction = True, include_bias = True,
                     implicit_terms=True, derivative_order = 0,
                     )

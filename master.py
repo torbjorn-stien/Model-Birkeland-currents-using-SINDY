@@ -87,7 +87,8 @@ def read_Jpar(from_year_index, nr_days):
     missing_indices = []
     
     Jpar = np.zeros((nr_days * 720, 1200))
-    
+    geo_cLat_deg = np.zeros((nr_days * 720, 1200))
+    geo_lon_deg = np.zeros((nr_days * 720, 1200))
     
     """
     read_ampere function breaks for day 22 in 2012. Seems to work for all of 2010-2011
@@ -145,6 +146,8 @@ def read_Jpar(from_year_index, nr_days):
                                 missing_indices.extend(indices_for_missing_day)
                                 
                                 Jpar[start_indice:end_indice] = np.nan
+                                geo_cLat_deg[start_indice:end_indice] = np.nan
+                                geo_lon_deg[start_indice:end_indice] = np.nan
                                 
                                 i += 1
                             
@@ -176,16 +179,25 @@ def read_Jpar(from_year_index, nr_days):
                             
                             full_day_data = np.full((720, 1200), np.nan)
                             full_day_data[actual_indices] = np.array(data["Jpar"])
+                            
+                            full_day_data_cLat = np.full((720, 1200), np.nan)
+                            full_day_data_cLat[actual_indices] = np.array(data["geo_cLat_deg"])
+                            
+                            full_day_data_lon = np.full((720, 1200), np.nan)
+                            full_day_data_lon[actual_indices] = np.array(data["geo_lon_deg"])
                         
                         else:
                             full_day_data = np.array(data["Jpar"])
+                            
+                            full_day_data_cLat = np.array(data["geo_cLat_deg"])
+                            full_day_data_lon = np.array(data["geo_lon_deg"])
 
                         start_indice = i * 720
                         end_indice = start_indice + 720
                         
                         Jpar[start_indice:end_indice] = full_day_data
-                        geo_cLat_list.append(data["geo_cLat_deg"])
-                        geo_lon_deg_list.append(data["geo_lon_deg"])
+                        geo_cLat_deg[start_indice:end_indice] = full_day_data_cLat
+                        geo_lon_deg[start_indice:end_indice] = full_day_data_lon
                         #dB_Naagcm_list.append(data["dB_Ngeo"])
                         #dB_Eaagcm_list.append(data["dB_Egeo"])
                         
@@ -204,8 +216,8 @@ def read_Jpar(from_year_index, nr_days):
             break
     
     #Jpar = np.concatenate(Jpar_list, axis=0)
-    geo_clat_deg = np.concatenate(geo_cLat_list, axis = 0)
-    geo_lon_deg = np.concatenate(geo_lon_deg_list, axis = 0)               
+    #geo_clat_deg = np.concatenate(geo_cLat_list, axis = 0)
+    #geo_lon_deg = np.concatenate(geo_lon_deg_list, axis = 0)               
     #dB_Naagcm_all = np.concatenate(dB_Naagcm_list, axis=0)
     #dB_Eaagcm_all = np.concatenate(dB_Eaagcm_list, axis=0)
     #print("Final shapes:", dB_Naagcm_all.shape, dB_Eaagcm_all.shape
@@ -213,10 +225,10 @@ def read_Jpar(from_year_index, nr_days):
     missing_full_days = np.array(missing_dates)
     missing_indices = np.array(missing_indices)
     
-    print("Final shapes:", Jpar.shape, geo_clat_deg.shape, geo_lon_deg.shape)#%%
+    print("Final shapes:", Jpar.shape, geo_cLat_deg.shape, geo_lon_deg.shape)#%%
     print(f"There are {len(missing_dates)} full days missing and an additional {len(missing_indices)-(len(missing_dates) * 720)} missing indices")
     
-    return Jpar, geo_clat_deg, geo_lon_deg, missing_full_days, missing_indices
+    return Jpar, geo_cLat_deg, geo_lon_deg, missing_full_days, missing_indices
 
 # Breaks for 2020:
 def read_files(directory, start_year=None, end_year=None):
@@ -593,19 +605,32 @@ def subset_data(arrays, min_length, overlap, force_overlap = False):
 
 #%%
 # dt = 2 min
-Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 5, nr_days = 50) 
+# 2012 is broken, file 20120125
+# 2019 aswell, file 20190520
+# year_index = 0 is 2009, 4 is 2013
+
+Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 4, nr_days = 365 * 5) 
 #%%
 Jpar_downsampled = Jpar[::2] # dt = 4 min
+cLat_deg_downsampled = cLat_deg[::2]
+lon_deg_downsampled = lon_deg[::2]
 
 interp_length = 1
+want_coordinates = False
 # If 1 column contains a nan, every column contains nan at the same place
 # find_nans() is bottlenecking, vectorize it at some point
 for column in range(Jpar_downsampled.shape[1]): 
     Jpar_downsampled[:, column], nan_start_Jpar, nan_end_Jpar, nan_lengths_Jpar, no_nan_lengths_Jpar = interpolate_nans(Jpar_downsampled[:, column],
-                                                      max_nan_length=interp_length)
+                                                      max_nan_length=interp_length, print_=False)
+    
+    if want_coordinates:
+        cLat_deg_downsampled[:, column], _, _, _, _ = interpolate_nans(cLat_deg_downsampled[:, column],
+                                                      max_nan_length=interp_length, print_=False)
+        lon_deg_downsampled[:, column],  _, _, _, _ = interpolate_nans(lon_deg_downsampled[:, column],
+                                                      max_nan_length=interp_length, print_=False)
 
 #%%
-year_data = read_files(IMF_PATH, start_year=2014, end_year=2014) # dt = 4min
+year_data = read_files(IMF_PATH, start_year=2014, end_year=2019) # dt = 4min
 #year_data_interp = year_data.interpolate(method = "linear") #dt = 4 min 
 #year_data = np.array(year_data_interp)
 
@@ -652,7 +677,7 @@ P_SW_data.set_index("datetime", inplace=True)
 
 #%%epsilon_4
 
-P_SW_filtered = P_SW_data.loc["2014-01-01":"2014-12-31"]
+P_SW_filtered = P_SW_data.loc["2010-01-01":"2018-12-31"]
 
 #%%
 
@@ -671,7 +696,7 @@ print(np.mean(no_nan_lengths_v))
 pandas.resample() treats NaN as 0.
 e.g mean([1, NaN, 3]) = 2, where mean([NaN, NaN, NaN]) = NaN
 """
-epsilon_4
+
 #%%
 
 #nan_pos = np.where(np.isnan(Jpar_downsampled[:, 0]))[0]
@@ -785,14 +810,16 @@ my_library = ps.CustomLibrary([lambda x: np.sin(x), #lambda x, y: np.sin(x + y),
 # Otherwise I must construct the system rows by projecting data onto weak samples.
 # w_ik^v = \int_Omega_k theta(x;t) X^v(x;t) d^D x dt eq. 5 in SINDyCP paper
 
-optimizer = ps.EnsembleOptimizer(opt=ps.STLSQ(threshold=0.010), 
+optimizer = ps.EnsembleOptimizer(opt= ps.STLSQ(threshold=0.10), 
                                  bagging=True, library_ensemble=True,
-                                 n_models = 10) # Default aggregator is median
+                                 n_models = 20) # Default aggregator is median
 
 feature_names = None
 
 # Finite difference amplifies noise in data.
 differentiation_method = ps.SmoothedFiniteDifference()
+
+
 
 """
 3 timesteps of the full system needs 1.92 TiB (1.1TB) RAM to model.
@@ -815,11 +842,14 @@ J_00 = Jpar_downsampled[training_start:training_end,pos_index - 50 + 1]
 J_22 = Jpar_downsampled[training_start:training_end,pos_index + 50 - 1]
 J_02 = Jpar_downsampled[training_start:training_end,pos_index + 50 + 1]
 
-clean_start, clean_end, clean_len = find_overlapping_clean_data([Jpar_downsampled[:, pos_index], Bs, v],
-                                                                min_length = 200, print_=False)
 
-min_length = 200
-cleaned_subset_data = subset_data([J_01, J_11, J_21, Bs, E_SR.real], min_length = min_length, overlap =1)
+min_length = 100
+#clean_start, clean_end, clean_len = find_overlapping_clean_data([Jpar_downsampled[:, pos_index], Bs, v],
+#                                                                min_length = min_length, print_=False)
+
+
+cleaned_subset_data = subset_data([J_01, J_11, J_21, Bs, E_WV.real], min_length = min_length, 
+                                  overlap = 1)
 
 J_01_clean = cleaned_subset_data[0]
 J_11_clean = cleaned_subset_data[1]
@@ -852,16 +882,13 @@ for i in range(len(Bs_clean)):
 
 # Delay the input data
 
-
 #X = [x.reshape(-1, 1) for x in X]  # Each array becomes (200, 1)
 #u = [u_.reshape(-1, 1) for u_ in u]  # Each array becomes (200, 1)
 
-
 u_delayed = u#delay_control_data(u, nr_of_delays = 1, delay_indexes = 1)
 
-
 spatial_grid = np.arange(0, 3, step = 1)               # Tro to do a north-south line of 3 points
-temporal_grid = np.arange(0, 200 * dt, step = 1 * dt)
+temporal_grid = np.arange(0, min_length * dt, step = 1 * dt)
 
 spatial, temporal = np.meshgrid(spatial_grid, temporal_grid, indexing = "ij")
 
@@ -891,15 +918,15 @@ lib = ps.WeakPDELibrary(function_library=ps.PolynomialLibrary(degree=3),
 # Various attempted libraries
 #input_lib = ps.CustomLibrary()
 
-combined_lib = ps.GeneralizedLibrary(libraries = [my_library, lib],
-                                     tensor_array = [[1, 1]])
+combined_lib = ps.GeneralizedLibrary(libraries = [ps.PolynomialLibrary(), ps.FourierLibrary(), lib],
+                                     tensor_array = [[1, 1, 1]])
 
 param_lib = ps.ParameterizedLibrary(feature_library=lib, parameter_library= lib,
                                     num_features = 3, num_parameters=2)
 
 # INitialize SINDy model
 mod = ps.SINDy(optimizer = optimizer,
-               feature_library= lib,
+               feature_library= combined_lib,
                differentiation_method=differentiation_method)
 
 # Fit SINDy model

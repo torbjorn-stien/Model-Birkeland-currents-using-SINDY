@@ -65,9 +65,9 @@ def read_Jpar(from_year_index, nr_days):
     Jpar : np.array
         Array of Birkeland currents for 1200 positions each dt
     geo_clat_deg : np.array
-        DESCRIPTION.
-    geo_lon_deg : TYPE
-        DESCRIPTION.
+        Array of satellite co-latitude for 1200 positions each dt
+    geo_lon_deg : np.array
+        Array of satellite longitude for 1200 positions each dt
     missing_full_days : TYPE
         DESCRIPTION.
     missing_indices : TYPE
@@ -79,9 +79,6 @@ def read_Jpar(from_year_index, nr_days):
     
     #dB_Naagcm_list = []
     #dB_Eaagcm_list = []
-    Jpar_list = []
-    geo_cLat_list = []
-    geo_lon_deg_list = []
     missing_dates = []
     missing_points = []
     missing_indices = []
@@ -699,10 +696,6 @@ e.g mean([1, NaN, 3]) = 2, where mean([NaN, NaN, NaN]) = NaN
 
 #%%
 
-#nan_pos = np.where(np.isnan(Jpar_downsampled[:, 0]))[0]
-
-#rows_with_nan = np.where(np.isnan(Jpar_downsampled).any(axis=1))[0]
-
 # Read in control data
 # Need complex for taking sqrt of negative values
 Bx = np.array(year_data["Bgsm_x"][:Jpar_downsampled.shape[0]], dtype=complex)
@@ -725,22 +718,14 @@ n_interp = P_SW_filtered["Density_proton"].resample("4min").mean()
 Vx = np.array(Vx_interp, dtype=complex)[:Jpar_downsampled.shape[0]]
 n = np.array(n_interp, dtype=complex)[:Jpar_downsampled.shape[0]]
 
-#Vx = np.delete(Vx, nan_pos)
-
 # Should redefine coordinates so Vx is always positive for calculating funcs like E_WAV_sqrt
 v = -Vx
-
-#Jpar_downsampled = np.delete(Jpar_downsampled, rows_with_nan, axis = 0)
 
 """
 Fit some sort of polynomial to the smoothed n points before and after a nan interval
 removes nan intervals, however can not be implemented for active periods as the 
 Jpar varies too much.
 """
-
-plt.plot(Bz)
-plt.show()
-
 
 #%%
 reconnection_voltage = Milan_coupling(By, Bz, Vx)
@@ -785,17 +770,6 @@ E_SR = v * B_T * sin_4th * p**(1/2)
 
 E_TL = n**(1/2) * v**2 * B_T * np.sin(theta_c/2)**6
 
-#%%
-
-print(f"Bx's shape: {Bx.shape}")
-
-
-# Stack control data to the end of system measurements matrix
-#Theta = np.hstack((Jpar_downsampled, Bx[:, np.newaxis], By[:, np.newaxis], Bz[:, np.newaxis])).real
-                   #Vx[:, np.newaxis]))
-
-missing_index = int(missing_indices[0]/2)
-#Theta = Theta[:missing_index]
 
 #%%
 
@@ -818,7 +792,6 @@ feature_names = None
 
 # Finite difference amplifies noise in data.
 differentiation_method = ps.SmoothedFiniteDifference()
-
 
 
 """
@@ -864,15 +837,8 @@ for i in range(len(J_11_clean)):
     
     X.append(features)
 
-
-# Deposited inputs
-# Bx[:training_end], By[:training_end],
 # +50 seems to have the greatest positive effect on model
 # +50 = one step "to the right", +1 = one step "down"
-#u = Bs_clean
-#for i in range(len(Bs_clean)):
-#    u.append([Bs_clean[i], v_clean[i]])
-
 
 u = []
 for i in range(len(Bs_clean)):
@@ -881,10 +847,6 @@ for i in range(len(Bs_clean)):
     u.append(inputs)
 
 # Delay the input data
-
-#X = [x.reshape(-1, 1) for x in X]  # Each array becomes (200, 1)
-#u = [u_.reshape(-1, 1) for u_ in u]  # Each array becomes (200, 1)
-
 u_delayed = u#delay_control_data(u, nr_of_delays = 1, delay_indexes = 1)
 
 spatial_grid = np.arange(0, 3, step = 1)               # Tro to do a north-south line of 3 points
@@ -924,7 +886,7 @@ combined_lib = ps.GeneralizedLibrary(libraries = [ps.PolynomialLibrary(), ps.Fou
 param_lib = ps.ParameterizedLibrary(feature_library=lib, parameter_library= lib,
                                     num_features = 3, num_parameters=2)
 
-# INitialize SINDy model
+# Initialize SINDy model
 mod = ps.SINDy(optimizer = optimizer,
                feature_library= combined_lib,
                differentiation_method=differentiation_method)
@@ -1079,7 +1041,5 @@ for mlt, (lon, lat) in mlt_labels.items():
 # Title and show plot
 plt.title('Average error in reconstructed data', fontsize = fontsize*1.5)
 plt.show()
-
-
 
 

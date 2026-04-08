@@ -25,6 +25,7 @@ from matplotlib.animation import FuncAnimation
 import math
 from itertools import groupby
 import glob
+import pyomnidata as pod
 
 
 """
@@ -35,6 +36,8 @@ Will have to use GEO to calculate solar zenith.
 both the AAGCM and GEO arrays. (e.g. plot them on/adjacent to each other)
 They more than likely do
 """
+
+pod.UpdateLocalData()
 
 AMPERE_PATH = "/nfs/revontuli/data/bjorn/Ampere"
 IMF_PATH = "/nfs/revontuli/data/bjorn/ACE/B_IMF"
@@ -403,7 +406,30 @@ def find_nans(data, print_=True):
 
 
 def interpolate_nans(data, max_nan_length):
+    """
+    Currently only linear interpolation
 
+    Parameters
+    ----------
+    data : TYPE
+        DESCRIPTION.
+    max_nan_length : TYPE
+        DESCRIPTION.
+
+    Returns
+    -------
+    data : TYPE
+        DESCRIPTION.
+    start_nan_indices : TYPE
+        DESCRIPTION.
+    end_nan_indices : TYPE
+        DESCRIPTION.
+    nan_lengths : TYPE
+        DESCRIPTION.
+    no_nan_lengths : TYPE
+        DESCRIPTION.
+
+    """
     start_nan_indices, end_nan_indices, nan_lengths, no_nan_lengths = find_nans(data, print_ = False)
     
     if len(start_nan_indices) == 0:
@@ -489,8 +515,7 @@ def find_overlapping_clean_data(arrays, min_length, print_=True):
             print(f"Array {i+1}: {n_clean} clean data points ({n_clean/array_length*100:.1f}%)")
             print(f"  Clean indices: {clean_indices}")
     
-    # Now find contiguous segments in the combined cl
-    #ean mask
+    # Now find contiguous segments in the combined clean mask
     n_combined_clean = np.sum(combined_clean_mask)
     if print_:
         print(f"\nCombined: {n_combined_clean} positions clean in ALL arrays ({n_combined_clean/array_length*100:.1f}%)")
@@ -527,8 +552,7 @@ def find_overlapping_clean_data(arrays, min_length, print_=True):
     
     if print_:
         print(f"\nFound {len(all_clean_lengths)} total overlapping clean segments:")
-        for i, (start, end, length) in enumerate(zip(clean_starts_original if 'clean_starts_original' in locals() else clean_starts, 
-                                                     clean_ends_original if 'clean_ends_original' in locals() else clean_ends, 
+        for i, (start, end, length) in enumerate(zip(clean_starts, clean_ends, 
                                                      all_clean_lengths)):
             status = " (filtered out)" if length < min_length else ""
             print(f"  Segment {i+1}: indices {start}-{end-1} (length {length}){status}")
@@ -627,7 +651,7 @@ for column in range(Jpar_downsampled.shape[1]):
                                                       max_nan_length=interp_length, print_=False)
 
 #%%
-year_data = read_files(IMF_PATH, start_year=2014, end_year=2019) # dt = 4min
+year_data = read_files(IMF_PATH, start_year=2013, end_year=2019) # dt = 4min
 #year_data_interp = year_data.interpolate(method = "linear") #dt = 4 min 
 #year_data = np.array(year_data_interp)
 
@@ -672,15 +696,15 @@ P_SW_data["datetime"] = pd.to_datetime(P_SW_data["Year"].astype(str)) + pd.to_ti
 P_SW_data = P_SW_data.drop(columns=["Year", "day", "hour", "min", "sec"]) # Drop old date columns
 P_SW_data.set_index("datetime", inplace=True)
 
-#%%epsilon_4
+#%%
 
-P_SW_filtered = P_SW_data.loc["2010-01-01":"2018-12-31"]
+P_SW_filtered = P_SW_data.loc["2013-01-01":"2018-12-31"]
 
 #%%
 
 P_SW_filtered.loc[:, "Density_proton"], nan_start_n, nan_end_n, nan_lengths_n, no_nan_lengths_n = interpolate_nans(np.array(P_SW_filtered["Density_proton"]),
                                                                                         max_nan_length=interp_length)
-P_SW_filtered.loc[:, "VGSM_X"], nan_start_v, nan_end_v, nan_lengths_v, no_nan_lengths_v = interpolate_nans(np.array(P_SW_filtered["VGSM_X"]),
+P_SW_filtered.loc[:, "VGSM_X"], nan_start_v, nan_endKL_v, nan_lengths_v, no_nan_lengths_v = interpolate_nans(np.array(P_SW_filtered["VGSM_X"]),
                                                                                         max_nan_length=interp_length)
 
 print(np.mean(no_nan_lengths_n))
@@ -693,6 +717,10 @@ print(np.mean(no_nan_lengths_v))
 pandas.resample() treats NaN as 0.
 e.g mean([1, NaN, 3]) = 2, where mean([NaN, NaN, NaN]) = NaN
 """
+
+#%%
+
+omni_data = pod.GetOMNI([2010, 2022], Res = 1)
 
 #%%
 
@@ -779,21 +807,6 @@ dt = 4
 my_library = ps.CustomLibrary([lambda x: np.sin(x), #lambda x, y: np.sin(x + y),
                                lambda x: np.exp(x), lambda x: 1/(1e-6 + x)])
 
-# SINDyCP uses ParametrizedLibrary, to create Theta(X, U) = Theta_feat(X) x Theta_par(U) 
-# Can be combined with weak formalized SINDy. Weak formulation can use WeakPDELibrary,
-# Otherwise I must construct the system rows by projecting data onto weak samples.
-# w_ik^v = \int_Omega_k theta(x;t) X^v(x;t) d^D x dt eq. 5 in SINDyCP paper
-
-optimizer = ps.EnsembleOptimizer(opt= ps.STLSQ(threshold=0.10), 
-                                 bagging=True, library_ensemble=True,
-                                 n_models = 20) # Default aggregator is median
-
-feature_names = None
-
-# Finite difference amplifies noise in data.
-differentiation_method = ps.SmoothedFiniteDifference()
-
-
 """
 3 timesteps of the full system needs 1.92 TiB (1.1TB) RAM to model.
 """
@@ -816,12 +829,12 @@ J_22 = Jpar_downsampled[training_start:training_end,pos_index + 50 - 1]
 J_02 = Jpar_downsampled[training_start:training_end,pos_index + 50 + 1]
 
 
-min_length = 100
+min_length = 200
 #clean_start, clean_end, clean_len = find_overlapping_clean_data([Jpar_downsampled[:, pos_index], Bs, v],
 #                                                                min_length = min_length, print_=False)
 
 
-cleaned_subset_data = subset_data([J_01, J_11, J_21, Bs, E_WV.real], min_length = min_length, 
+cleaned_subset_data = subset_data([J_01, J_11, J_21, E_SR.real, E_WAV.real], min_length = min_length, 
                                   overlap = 1)
 
 J_01_clean = cleaned_subset_data[0]
@@ -857,6 +870,7 @@ spatial, temporal = np.meshgrid(spatial_grid, temporal_grid, indexing = "ij")
 spatio_temporal_grid = np.stack((spatial, temporal), axis=-1)
 
 print("Shape of spatio_temporal_grid:", spatio_temporal_grid.shape)
+
 """
 X, T = np.meshgrid(x, t, indexing = "ij")
 XT = np.transpose([X, T])
@@ -869,10 +883,25 @@ pySINDy does not currently support different spatiotemporal grids for trajectori
     2. Cut the trajectories down to the same length and define them as being on 
     the same temporal grid
 """
+
+# SINDyCP uses ParametrizedLibrary, to create Theta(X, U) = Theta_feat(X) x Theta_par(U) 
+# Can be combined with weak formalized SINDy. Weak formulation can use WeakPDELibrary,
+# Otherwise I must construct the system rows by projecting data onto weak samples.
+# w_ik^v = \int_Omega_k theta(x;t) X^v(x;t) d^D x dt eq. 5 in SINDyCP paper
+
+optimizer = ps.EnsembleOptimizer(opt= ps.STLSQ(threshold=0.10), 
+                                 bagging=True, library_ensemble=True,
+                                 n_models = 20) # Default aggregator is median
+
+feature_names = None
+
+# Finite difference amplifies noise in data.
+differentiation_method = ps.SmoothedFiniteDifference(smoother_kws={'window_length': 5})
+
 #H_xt = np.array([1, 2])  # Adjust these values if necessary
 # Only temporal grid gives dx/dt = 1/2 dx/dt + 1/2 dx/dt, R² = 1
-lib = ps.WeakPDELibrary(function_library=ps.PolynomialLibrary(degree=3),
-                    spatiotemporal_grid=temporal_grid, #spatio_temporal_grid, # spatio_temporal_grid -> "tuple" has no attribute "shape"
+lib = ps.WeakPDELibrary(function_library=ps.PolynomialLibrary(degree=4),
+                    spatiotemporal_grid=spatio_temporal_grid, # spatio_temporal_grid -> "tuple" has no attribute "shape"
                     include_interaction = True, include_bias = True,
                     implicit_terms=True, derivative_order = 0,
                     )
@@ -881,14 +910,14 @@ lib = ps.WeakPDELibrary(function_library=ps.PolynomialLibrary(degree=3),
 #input_lib = ps.CustomLibrary()
 
 combined_lib = ps.GeneralizedLibrary(libraries = [ps.PolynomialLibrary(), ps.FourierLibrary(), lib],
-                                     tensor_array = [[1, 1, 1]])
+                                     )#tensor_array = [[1, 1]])
 
 param_lib = ps.ParameterizedLibrary(feature_library=lib, parameter_library= lib,
                                     num_features = 3, num_parameters=2)
 
 # Initialize SINDy model
 mod = ps.SINDy(optimizer = optimizer,
-               feature_library= combined_lib,
+               feature_library= lib,
                differentiation_method=differentiation_method)
 
 # Fit SINDy model

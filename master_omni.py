@@ -16,6 +16,7 @@ from nan_handling import find_nans, interpolate_nans, find_overlapping_clean_dat
 
 import warnings
 from pysindy.utils._axes import AxesWarning
+from pysindy.utils import compare_coefficient_plots
 
 ps.utils.
 warnings.filterwarnings("ignore", category=AxesWarning)
@@ -198,10 +199,11 @@ window_size = 100
 
 AU_smoothed = []
 B_smoothed = []
+Bx_smoothed = []
 for trajectory in range(len(test[0])):
     AU_smoothed.append(moving_average(test[0][trajectory], window_size=window_size))
     B_smoothed.append(moving_average(test[1][trajectory], window_size=window_size))
-
+    Bx_smoothed.append(moving_average(test[2], window_size = window_size))
 
 
 #%%
@@ -221,7 +223,7 @@ optimizer = ps.EnsembleOptimizer(opt=  ps.SR3(reg_weight_lam= 0.1,relax_coeff_nu
                                  bagging=True, library_ensemble=True,
                                  n_models = 1000) # Default aggregator is median
 
-optimizer = ps.SR3(reg_weight_lam= 0.0001,relax_coeff_nu=5.5, regularizer="L2")
+optimizer = ps.SR3(reg_weight_lam= 0.0001,relax_coeff_nu=0.5, regularizer="L2")
 
 feature_names = None
 
@@ -252,7 +254,7 @@ wpde_lib = ps.WeakPDELibrary(function_library= ps.PolynomialLibrary(degree=3),
 
 combined_lib = ps.GeneralizedLibrary(libraries = [ps.PolynomialLibrary(degree = 3), 
                                                   ps.FourierLibrary(n_frequencies=1), 
-                                                  ],
+                                                  wpde_lib],
                                      )#tensor_array = [[1, 1]])
 # Initialize SINDy model
 mod = ps.SINDy(optimizer = optimizer,
@@ -261,10 +263,20 @@ mod = ps.SINDy(optimizer = optimizer,
 
 # Fit SINDy model
 mod.fit(x = X, t = dt, u = u_delayed)
-
 # Print the best fit approximation
 mod.print()
 print(mod.score(X, dt, u = u_delayed)) # R² score of model
+#%%
+
+sim = mod.simulate([0], t=np.arange(0, 5), u = u_delayed[:5])
+
+#%%
+
+fig = plt.figure(figsize = [11, 6])
+axes = fig.subplots(1, 2)
+
+fig = compare_coefficient_plots(
+    mod.coef_,)
 
 #%%
 plt.plot(X)

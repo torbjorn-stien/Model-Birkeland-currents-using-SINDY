@@ -375,14 +375,14 @@ def delay_control_data(control_dat, nr_of_delays, delay_indexes):
 # 2019 aswell, file 20190520
 # year_index = 0 is 2009, 4 is 2013
 
-Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 4, nr_days = 365) 
+Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 4, nr_days = 3) 
 #%%
-Jpar_downsampled = Jpar[::2] # dt = 4 min * 5
-cLat_deg_downsampled = cLat_deg[::2]
-lon_deg_downsampled = lon_deg[::2]
+Jpar_downsampled = Jpar#[::2] # dt = 4 min * 5
+cLat_deg_downsampled = cLat_deg#[::2]
+lon_deg_downsampled = lon_deg#[::2]
 
 interp_length = 1
-want_coordinates = False
+want_coordinates = True
 # If 1 column contains a nan, every column contains nan at the same place
 # find_nans() is bottlenecking, vectorize it at some point
 for column in range(Jpar_downsampled.shape[1]): 
@@ -391,9 +391,92 @@ for column in range(Jpar_downsampled.shape[1]):
     
     if want_coordinates:
         cLat_deg_downsampled[:, column], _, _, _, _ = interpolate_nans(cLat_deg_downsampled[:, column],
-                                                      max_nan_length=interp_length, print_=False)
+                                                      max_nan_length=interp_length)
         lon_deg_downsampled[:, column],  _, _, _, _ = interpolate_nans(lon_deg_downsampled[:, column],
-                                                      max_nan_length=interp_length, print_=False)
+                                                      max_nan_length=interp_length)
+        
+#%%
+"""
+Integrate over up and down currents seperately ofc, total should be 0
+
+"""
+def integrate_FACsv2(FACs, co_latitudes, longitudes):
+    """
+    Integrates field-aligned currents (FACs) over a polar cap region.
+    Parameters:
+        FACs (ndarray): 2D array of FAC values with shape (n_timesteps, n_points).
+        co_latitudes (ndarray): 1D array of co-latitudes (in degrees) corresponding to the points.
+        longitudes (ndarray): 1D array of longitudes (in degrees) corresponding to the points.
+    Returns:
+        ndarray: Integrated FAC values for each timestep, with shape (n_timesteps, 1).
+    """h
+    n_timesteps, n_points = FACs.shape
+    
+    out_currents = FACs.copy()
+    out_currents[out_currents < 0] = 0
+    
+    in_currents = FACs.copy()
+    in_currents[in_currents > 0] = 0
+    
+    # Convert co-latitudes and longitudes to radians
+    theta = np.radians(co_latitudes)
+    phi = np.radians(longitudes)
+    print(FACs)
+    # Compute weights based on spherical coordinates
+    dtheta = np.abs(np.gradient(theta, axis=1))  # Spacing in theta (along spatial points)
+    dphi = np.abs(np.gradient(phi, axis=1))      # Spacing in phi (along spatial points)
+    weights = np.sin(theta) * dtheta * dphi      # Area element in spherical coordinates
+    
+    # Ensure weights are normalized to the total cap area
+    cap_area = 2 * np.pi * (1 - np.cos(np.max(theta)))  # Total polar cap area
+    weights /= np.sum(weights) / cap_area              # Normalize weights
+    
+    # Perform the weighted integration over the spatial dimension (axis=1)
+    integrated_out_currents = np.nansum(out_currents * weights, axis=1, keepdims=True)
+    integrated_in_currents = np.nansum(in_currents * weights, axis=1, keepdims=True)
+    
+    return integrated_out_currents, integrated_in_currents
+
+fin = -1
+test2 = integrate_FACsv2(Jpar_downsampled[:fin], 
+                      cLat_deg_downsampled[:fin], lon_deg_downsampled[:fin])
+
+
+#%%
+def mean_norm(data):
+    norm = (data - np.nanmean(data))/np.nanmean(data)
+    
+    return norm
+
+def moving_average(data, window_size):
+    return np.convolve(data, np.ones(window_size)/window_size, mode='valid')
+
+
+plt.plot(test2[0])
+plt.plot(test2[1])
+plt.show()
+
+
+norm_test1 = mean_norm(test2[0])
+norm_test2 = mean_norm(test2[1])
+plt.plot(norm_test1)
+plt.plot(norm_test2)
+plt.show()
+
+
+window_size = 15
+
+avg1 = moving_average(norm_test1.flatten(), window_size)
+avg2 = moving_average(norm_test2.flatten(), window_size)
+
+plt.plot(avg1)
+plt.plot(avg2)
+plt.show()
+
+#%%
+
+plt.plot(Jpar_downsampled[:fin])
+plt.show()
 
 #%%
 year_data = read_files(IMF_PATH, start_year=2013, end_year=2013) # dt = 4min

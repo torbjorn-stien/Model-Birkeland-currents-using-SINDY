@@ -39,8 +39,6 @@ They more than likely do
 pod.UpdateLocalData()
 
 AMPERE_PATH = "/nfs/revontuli/data/bjorn/Ampere"
-IMF_PATH = "/nfs/revontuli/data/bjorn/ACE/B_IMF"
-P_SW_PATH = "/nfs/revontuli/data/bjorn/ACE/P_SW"
 
 fontsize = 20
 
@@ -207,7 +205,7 @@ def integrate_FACs(FACs, co_latitudes, longitudes):
     # Convert co-latitudes and longitudes to radians
     theta = np.radians(co_latitudes)
     phi = np.radians(longitudes)
-    print(FACs)
+    
     # Compute weights based on spherical coordinates
     dtheta = np.abs(np.gradient(theta, axis=1))  # Spacing in theta (along spatial points)
     dphi = np.abs(np.gradient(phi, axis=1))      # Spacing in phi (along spatial points)
@@ -239,6 +237,9 @@ def moving_average(data, window_size):
 # 2012 is broken, file 20120125
 # 2019 aswell, file 20190520
 # year_index = 0 is 2009, 4 is 2013
+"""
+2012, 2016 & 2020 were leap-years
+"""
 
 Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 4, 
                                                                    nr_days = 3,
@@ -291,68 +292,6 @@ plt.plot(smoothed_in)
 plt.show()
 
 #%%
-year_data = read_files(IMF_PATH, start_year=2013, end_year=2013) # dt = 4min
-#year_data_interp = year_data.interpolate(method = "linear") #dt = 4 min 
-#year_data = np.array(year_data_interp)
-
-"""
-2012, 2016 & 2020 were leap-years
-"""
-
-#%%
-print(Jpar.shape)
-
-#%%
-# Reads in additional ACE parameters
-# File names are nonsensical, therefore all 14 years havsmoother_kws={'window_length': 5}e to be read in at once and then sorted
-# Luckily the reading is fairly quick.
-# 1 measurement every 64 seconds, 0.9375 samples pr. min
-
-p_sw_file_list = glob.glob("/nfs/revontuli/data/bjorn/ACE/P_SW/*.zip")  # Reads any zip file
-data_frames = []
-for file in p_sw_file_list: # Reads in the zip files
-    df = pd.read_csv(
-        file,
-        skiprows=31,
-        delimiter=r"\s+",
-        names=["Year", "day", "hour", "min", "sec",
-               "Density_proton", "T_proton",
-               "VGSE_X", "VGSE_Y", "VGSE_Z",
-               "VGSM_X", "VGSM_Y", "VGSM_Z",
-               "GSE_X", "GSE_Y", "GSE_Z"]
-    )
-    data_frames.append(df)
-combined_p_sw_data = pd.concat(data_frames, ignore_index=True) # Concats the years, sorts them below
-P_SW_data = combined_p_sw_data.sort_values(by=["Year", "day", "hour", "min", "sec"]).reset_index(drop=True) # 1 sample every 64 seconds
-
-# Convert -9999 to nan
-P_SW_data[P_SW_data == -9999.9] = np.nan
-
-# add DatetimeIndex for easy resampling
-P_SW_data["datetime"] = pd.to_datetime(P_SW_data["Year"].astype(str)) + pd.to_timedelta(P_SW_data["day"] - 1, unit="D") \
-    + pd.to_timedelta(P_SW_data["hour"], unit="h") + pd.to_timedelta(P_SW_data["min"], unit="m") \
-        + pd.to_timedelta(P_SW_data["sec"], unit="s")
-     
-P_SW_data = P_SW_data.drop(columns=["Year", "day", "hour", "min", "sec"]) # Drop old date columns
-P_SW_data.set_index("datetime", inplace=True)
-
-#%%
-
-P_SW_filtered = P_SW_data.loc["2013-01-01":"2013-12-31"]
-
-#%%
-
-P_SW_filtered.loc[:, "Density_proton"], nan_start_n, nan_end_n, nan_lengths_n, no_nan_lengths_n = interpolate_nans(np.array(P_SW_filtered["Density_proton"]),
-                                                                                        max_nan_length=interp_length)
-P_SW_filtered.loc[:, "VGSM_X"], nan_start_v, nan_endKL_v, nan_lengths_v, no_nan_lengths_v = interpolate_nans(np.array(P_SW_filtered["VGSM_X"]),
-                                                                                        max_nan_length=interp_length)
-
-print(np.mean(no_nan_lengths_n))
-print(np.mean(no_nan_lengths_v))
-
-# Resample to 4min:
-#P_SW_data_interp = P_SW_interp.resample("4min").mean()
-
 """
 pandas.resample() treats NaN as 0.
 e.g mean([1, NaN, 3]) = 2, where mean([NaN, NaN, NaN]) = NaN
@@ -366,22 +305,6 @@ omni_data = pod.GetOMNI([2010, 2022], Res = 1)
 
 # Read in control data
 # Need complex for taking sqrt of negative values
-Bx = np.array(year_data["Bgsm_x"][:Jpar_downsampled.shape[0]], dtype=complex)
-By = np.array(year_data["Bgsm_y"][:Jpar_downsampled.shape[0]])
-Bz = np.array(year_data["Bgsm_z"][:Jpar_downsampled.shape[0]])
-Bz[Bz<-200] = 0
-
-Bx[Bx<-100] = 0
-By[By<-100] = 0
-smoother_kws={'window_length': 5}
-"""
-Bx = np.delete(Bx, rows_with_nan)
-By = np.delete(By, rows_with_nan)
-Bz = np.delete(Bz, rows_with_nan)
-"""
-
-Vx_interp =  P_SW_filtered["VGSM_X"].resample("4min").mean()
-n_interp = P_SW_filtered["Density_proton"].resample("4min").mean()
 
 Vx = np.array(Vx_interp, dtype=complex)[:Jpar_downsampled.shape[0]]
 n = np.array(n_interp, dtype=complex)[:Jpar_downsampled.shape[0]]

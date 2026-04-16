@@ -10,11 +10,9 @@ import pysindy as ps
 
 import numpy as np
 import matplotlib.pyplot as plt
-from read_ampere_ncdf import read_ampere_ncdf
+from read_ampere_ncdf import read_Jpar
 from pathlib import Path
-import re
-from zipfile import ZipFile
-from tempfile import TemporaryDirectory
+
 import os
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature 
@@ -44,192 +42,7 @@ AMPERE_PATH = "/nfs/revontuli/data/bjorn/Ampere"
 IMF_PATH = "/nfs/revontuli/data/bjorn/ACE/B_IMF"
 P_SW_PATH = "/nfs/revontuli/data/bjorn/ACE/P_SW"
 
-amp_root = Path(AMPERE_PATH)
-imf_root = Path(IMF_PATH)
-p_sw_root = Path(P_SW_PATH)
-
 fontsize = 20
-
-
-# 2009 has incomplete data
-def read_Jpar(from_year_index, nr_days):
-    """
-    Reads Ampere data, handles missing data and returns the Birkeland current
-    data with nan where there is missing data.
-
-    Parameters
-    ----------
-    from_year_index : int
-        index of the year to start reading from
-    nr_days : int
-        number of days of data to read 
-
-    Returns
-    -------
-    Jpar : np.array
-        Array of Birkeland currents for 1200 positions each dt
-    geo_clat_deg : np.array
-        Array of satellite co-latitude for 1200 positions each dt
-    geo_lon_deg : np.array
-        Array of satellite longitude for 1200 positions each dt
-    missing_full_days : TYPE
-        DESCRIPTION.
-    missing_indices : TYPE
-        DESCRIPTION.
-
-    """
-    # Reading in Ampere data:
-    year_dirs = [d for d in amp_root.iterdir() if d.is_dir() and re.fullmatch(r"\d{4}", d.name)]
-    
-    #dB_Naagcm_list = []
-    #dB_Eaagcm_list = []
-    missing_dates = []
-    missing_points = []
-    missing_indices = []
-    
-    Jpar = np.zeros((nr_days * 720, 1200))
-    geo_cLat_deg = np.zeros((nr_days * 720, 1200))
-    geo_lon_deg = np.zeros((nr_days * 720, 1200))
-    
-    """
-    read_ampere function breaks for day 22 in 2012. Seems to work for all of 2010-2011
-    aswell as 2013+
-    
-    2009 is missing a lot of days
-    """
-    i = 0 # Counts how many days have passed
-    stop_val =  nr_days # Number of days to process
-    prev_date = None
-    for year in sorted(year_dirs, key=lambda p: int(p.name))[from_year_index:]: # Filter out 2009, by using [1:]
-        print(f"Year: {year.name}")
-        
-        with TemporaryDirectory() as tmp:
-            tmpdir = Path(tmp)
-            
-            for zip_path in sorted(year.glob("*north.grd.zip")):
-                #print(f"  Zip: {zip_path.name}")
-                
-                with ZipFile(zip_path) as zf:
-                    members = [m for m in zf.namelist() if m.lower().endswith((".nc", ".ncdf"))]
-                    
-                    for member in sorted(members):
-                        extracted_path = tmpdir / member
-                        extracted_path.parent.mkdir(parents=True, exist_ok=True)
-                        zf.extract(member, path=tmpdir)
-                        print(f"    Extracted: {member} -> {extracted_path}")
-                        
-                        date = re.search(r"(\d{4})(\d{2})(\d{2})", member)
-                        
-                        # Some days are missing within the dataset(s), this returns the missing dates
-                        if prev_date:
-                            # Checks wether there are any days missing
-                            day = int(date.group(3))
-                            prev_day = int(prev_date.group(3))
-                            
-                            diff = day - prev_day
-                            
-                            # If there are days missing, returns the dates and indices
-                            while diff > 1:
-                                diff = diff - 1
-                                missing_day = day - diff
-                                
-                                month = int(date.group(2))
-                                year = int(date.group(1))
-                                
-                                missing_date = int(f"{year:04d}{month:02d}{missing_day:02d}")
-                                missing_dates.append(missing_date)
-                                
-                                # returns the indices the missing days would have occupied if they were not missing
-                                start_indice = missing_day * 720
-                                end_indice = start_indice + 720 
-                                
-                                indices_for_missing_day = np.arange(start_indice, end_indice, 1) 
-                                missing_indices.extend(indices_for_missing_day)
-                                
-                                Jpar[start_indice:end_indice] = np.nan
-                                geo_cLat_deg[start_indice:end_indice] = np.nan
-                                geo_lon_deg[start_indice:end_indice] = np.nan
-                                
-                                i += 1
-                            
-                        # Pass the full path as a string
-                        data = read_ampere_ncdf(str(extracted_path), OutVars="J")
-                        
-                        # Checks if each day contains the correct amount of time-points
-                        # (720 pr. day for full dataset, 360 for downsampled dataset)
-                        if len(data["Jpar"]) != 720:
-                            expected_points = np.arange(start = 0.0, stop = 24, step = 24/720)
-                            actual_points = np.array(data["time"])
-                            missing_indices_this_day = []
-                            
-                            for idx, point in enumerate(expected_points):
-                                if not np.any(np.isclose(point, actual_points, atol=1e-4)):
-                                    # Shifts the indices forward to the day they are missing from,
-                                    # also shifts them forward by the missing full days
-                                    missing_indice = idx + i * 720
-                                    missing_points.append(point)
-                                    missing_indices.append(missing_indice)
-                                    missing_indices_this_day.append(idx)
-                                    
-                            
-                            start_indice = i * 720
-                            end_indice = start_indice + 720
-                            
-                            actual_indices = np.delete(np.arange(0, 720, 1), 
-                                                       np.array(missing_indices_this_day))
-                            
-                            full_day_data = np.full((720, 1200), np.nan)
-                            full_day_data[actual_indices] = np.array(data["Jpar"])
-                            
-                            full_day_data_cLat = np.full((720, 1200), np.nan)
-                            full_day_data_cLat[actual_indices] = np.array(data["geo_cLat_deg"])
-                            
-                            full_day_data_lon = np.full((720, 1200), np.nan)
-                            full_day_data_lon[actual_indices] = np.array(data["geo_lon_deg"])
-                        
-                        else:
-                            full_day_data = np.array(data["Jpar"])
-                            
-                            full_day_data_cLat = np.array(data["geo_cLat_deg"])
-                            full_day_data_lon = np.array(data["geo_lon_deg"])
-
-                        start_indice = i * 720
-                        end_indice = start_indice + 720
-                        
-                        Jpar[start_indice:end_indice] = full_day_data
-                        geo_cLat_deg[start_indice:end_indice] = full_day_data_cLat
-                        geo_lon_deg[start_indice:end_indice] = full_day_data_lon
-                        #dB_Naagcm_list.append(data["dB_Ngeo"])
-                        #dB_Eaagcm_list.append(data["dB_Egeo"])
-                        
-                        prev_date = date
-                        i += 1
-                        
-                        if i == stop_val:
-                            break
-                    if i == stop_val:
-                        break
-                if i == stop_val:
-                    break
-            if i == stop_val:
-                break
-        if i == stop_val:
-            break
-    
-    #Jpar = np.concatenate(Jpar_list, axis=0)
-    #geo_clat_deg = np.concatenate(geo_cLat_list, axis = 0)
-    #geo_lon_deg = np.concatenate(geo_lon_deg_list, axis = 0)               
-    #dB_Naagcm_all = np.concatenate(dB_Naagcm_list, axis=0)
-    #dB_Eaagcm_all = np.concatenate(dB_Eaagcm_list, axis=0)
-    #print("Final shapes:", dB_Naagcm_all.shape, dB_Eaagcm_all.shape
-    
-    missing_full_days = np.array(missing_dates)
-    missing_indices = np.array(missing_indices)
-    
-    print("Final shapes:", Jpar.shape, geo_cLat_deg.shape, geo_lon_deg.shape)#%%
-    print(f"There are {len(missing_dates)} full days missing and an additional {len(missing_indices)-(len(missing_dates) * 720)} missing indices")
-    
-    return Jpar, geo_cLat_deg, geo_lon_deg, missing_full_days, missing_indices
 
 # Breaks for 2020:
 def read_files(directory, start_year=None, end_year=None):
@@ -369,38 +182,8 @@ def delay_control_data(control_dat, nr_of_delays, delay_indexes):
 
     return delayed_input
 
-#%%
-# dt = 2 min
-# 2012 is broken, file 20120125
-# 2019 aswell, file 20190520
-# year_index = 0 is 2009, 4 is 2013
 
-Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 4, nr_days = 3) 
-#%%
-Jpar_downsampled = Jpar#[::2] # dt = 4 min * 5
-cLat_deg_downsampled = cLat_deg#[::2]
-lon_deg_downsampled = lon_deg#[::2]
-
-interp_length = 1
-want_coordinates = True
-# If 1 column contains a nan, every column contains nan at the same place
-# find_nans() is bottlenecking, vectorize it at some point
-for column in range(Jpar_downsampled.shape[1]): 
-    Jpar_downsampled[:, column], nan_start_Jpar, nan_end_Jpar, nan_lengths_Jpar, no_nan_lengths_Jpar = interpolate_nans(Jpar_downsampled[:, column],
-                                                      max_nan_length=interp_length)
-    
-    if want_coordinates:
-        cLat_deg_downsampled[:, column], _, _, _, _ = interpolate_nans(cLat_deg_downsampled[:, column],
-                                                      max_nan_length=interp_length)
-        lon_deg_downsampled[:, column],  _, _, _, _ = interpolate_nans(lon_deg_downsampled[:, column],
-                                                      max_nan_length=interp_length)
-        
-#%%
-"""
-Integrate over up and down currents seperately ofc, total should be 0
-
-"""
-def integrate_FACsv2(FACs, co_latitudes, longitudes):
+def integrate_FACs(FACs, co_latitudes, longitudes):
     """
     Integrates field-aligned currents (FACs) over a polar cap region.
     Parameters:
@@ -409,7 +192,10 @@ def integrate_FACsv2(FACs, co_latitudes, longitudes):
         longitudes (ndarray): 1D array of longitudes (in degrees) corresponding to the points.
     Returns:
         ndarray: Integrated FAC values for each timestep, with shape (n_timesteps, 1).
-    """h
+        
+        
+    Integrate over up and down currents seperately ofc, total should be 0
+    """
     n_timesteps, n_points = FACs.shape
     
     out_currents = FACs.copy()
@@ -437,12 +223,7 @@ def integrate_FACsv2(FACs, co_latitudes, longitudes):
     
     return integrated_out_currents, integrated_in_currents
 
-fin = -1
-test2 = integrate_FACsv2(Jpar_downsampled[:fin], 
-                      cLat_deg_downsampled[:fin], lon_deg_downsampled[:fin])
 
-
-#%%
 def mean_norm(data):
     norm = (data - np.nanmean(data))/np.nanmean(data)
     
@@ -452,30 +233,61 @@ def moving_average(data, window_size):
     return np.convolve(data, np.ones(window_size)/window_size, mode='valid')
 
 
-plt.plot(test2[0])
-plt.plot(test2[1])
+
+#%%
+# dt = 2 min
+# 2012 is broken, file 20120125
+# 2019 aswell, file 20190520
+# year_index = 0 is 2009, 4 is 2013
+
+Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 4, 
+                                                                   nr_days = 3,
+                                                                   directory_path = AMPERE_PATH)  
+#%%
+Jpar_downsampled = Jpar#[::2] # dt = 4 min * 5
+cLat_deg_downsampled = cLat_deg#[::2]
+lon_deg_downsampled = lon_deg#[::2]
+
+interp_length = 1
+want_coordinates = True
+# If 1 column contains a nan, every column contains nan at the same place
+# find_nans() is bottlenecking, vectorize it at some point
+for column in range(Jpar_downsampled.shape[1]): 
+    Jpar_downsampled[:, column], nan_start_Jpar, nan_end_Jpar, nan_lengths_Jpar, no_nan_lengths_Jpar = interpolate_nans(Jpar_downsampled[:, column],
+                                                      max_nan_length=interp_length)
+    
+    if want_coordinates:
+        cLat_deg_downsampled[:, column], _, _, _, _ = interpolate_nans(cLat_deg_downsampled[:, column],
+                                                      max_nan_length=interp_length)
+        lon_deg_downsampled[:, column],  _, _, _, _ = interpolate_nans(lon_deg_downsampled[:, column],
+                                                      max_nan_length=interp_length)
+        
+#%%
+
+fin = -1
+integrated_out_Jpar, integrated_in_Jpar= integrate_FACs(Jpar_downsampled[:fin], 
+                      cLat_deg_downsampled[:fin], lon_deg_downsampled[:fin])
+
+
+plt.plot(integrated_out_Jpar)
+plt.plot(integrated_in_Jpar)
 plt.show()
 
 
-norm_test1 = mean_norm(test2[0])
-norm_test2 = mean_norm(test2[1])
-plt.plot(norm_test1)
-plt.plot(norm_test2)
+norm_out = mean_norm(integrated_out_Jpar)
+norm_in = mean_norm(integrated_in_Jpar)
+plt.plot(norm_out)
+plt.plot(norm_in)
 plt.show()
 
 
 window_size = 15
 
-avg1 = moving_average(norm_test1.flatten(), window_size)
-avg2 = moving_average(norm_test2.flatten(), window_size)
+smoothed_out = moving_average(norm_out.flatten(), window_size)
+smoothed_in = moving_average(norm_in.flatten(), window_size)
 
-plt.plot(avg1)
-plt.plot(avg2)
-plt.show()
-
-#%%
-
-plt.plot(Jpar_downsampled[:fin])
+plt.plot(smoothed_out)
+plt.plot(smoothed_in)
 plt.show()
 
 #%%

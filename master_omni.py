@@ -18,7 +18,7 @@ import warnings
 from pysindy.utils._axes import AxesWarning
 from pysindy.utils import compare_coefficient_plots
 
-ps.utils.
+
 warnings.filterwarnings("ignore", category=AxesWarning)
 
 
@@ -35,12 +35,10 @@ def delay_control_data(control_dat, nr_of_delays, delay_indexes):
         How many indexes each delay should be.
         For ACE data dt = 4min, -> 1 delay 1 index = delay 4 minutes
         
-
     Returns
     -------
     delayed_input : numpy array
         Array with each delay stacked below eachother on axis 0
-
     """
     u = control_dat
     delays = np.arange(0, nr_of_delays, delay_indexes)
@@ -96,6 +94,17 @@ def stack_data(*arrays):
         result.append(stacked)
     
     return result
+
+# Moving average function
+def moving_average(data, window_size):
+    return np.convolve(data, np.ones(window_size)/window_size, mode='valid')
+
+def mean_norm(data):
+    norm = (data - np.nanmean(data))/np.nanmean(data)
+    
+    return norm
+
+
 #%%
 
 omni_data = pod.GetOMNI([2010, 2022], Res = 1)
@@ -113,7 +122,6 @@ plt.tight_layout()
 plt.show()
 
 #%%
-
 AE = omni_data.AE
 AL = omni_data.AL
 AU = omni_data.AU
@@ -124,14 +132,6 @@ Bz = omni_data.BzGSE
 Vx = omni_data.Vx
 Vy = omni_data.Vy
 Vz = omni_data.Vz
-
-
-#%%
-
-print(np.any(np.isnan(Bx)))
-
-#%%
-start, end, nan_len, no_nan_len = find_nans(Vx)
 
 #%%
 
@@ -145,16 +145,6 @@ Vx_interp = interpolate_nans(Vx, interp_len)
 Vy_interp = interpolate_nans(Vy, interp_len)
 Vz_interp = interpolate_nans(Vz, interp_len)
 
-
-
-#%%
-
-plt.figure(figsize=(11,6))
-
-ax0 = plt.plot(Vx_interp[0][:1440], linewidth=1.1)
-plt.tight_layout()
-plt.show()
-
 #%%
 
 train_start = 0
@@ -167,12 +157,6 @@ B_train = B_interp[0][train_start:train_end]
 Bx_train = Bx_interp[0][train_start:train_end]
 By_train = By_interp[0][train_start:train_end]
 Bz_train = Bz_interp[0][train_start:train_end]
-
-
-def mean_norm(data):
-    norm = (data - np.nanmean(data))/np.nanmean(data)
-    
-    return norm
 
 AU_train = mean_norm(AU_train)
 B_train = mean_norm(B_train)
@@ -190,9 +174,6 @@ Does not work
 """
 
 #%%
-# Moving average function
-def moving_average(data, window_size):
-    return np.convolve(data, np.ones(window_size)/window_size, mode='valid')
 
 # Apply moving average with a window size 
 window_size = 100
@@ -283,10 +264,7 @@ plt.plot(X)
 plt.plot(u_delayed)
 plt.show()
 
-#%%
-print(f"Shape of x0: {x0.shape}")
-print(f"Shape of temporal_grid: {temporal_grid.shape}")
-print(f"Shape of u_delayed: {u_delayed.shape}")
+
 #%%
 import numpy as np
 # Ensure X[0] is correctly formatted

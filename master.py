@@ -26,6 +26,10 @@ import glob
 import pyomnidata as pod
 from nan_handling import find_nans, interpolate_nans, find_overlapping_clean_data, subset_data
 
+import warnings
+from pysindy.utils._axes import AxesWarning
+
+warnings.filterwarnings("ignore", category=AxesWarning)
 
 """
 Look at solar zenith angle to see if I can put that in as a driver aswell.
@@ -180,44 +184,64 @@ def delay_control_data(control_dat, nr_of_delays, delay_indexes):
 
     return delayed_input
 
-
 def integrate_FACs(FACs, co_latitudes, longitudes):
     """
     Integrates field-aligned currents (FACs) over a polar cap region.
     Parameters:
         FACs (ndarray): 2D array of FAC values with shape (n_timesteps, n_points).
-        co_latitudes (ndarray): 1D array of co-latitudes (in degrees) corresponding to the points.
-        longitudes (ndarray): 1D array of longitudes (in degrees) corresponding to the points.
+        co_latitudes (ndarray): 2D array of co-latitudes (in degrees) with shape (n_timesteps, n_points).
+        longitudes (ndarray): 2D array of longitudes (in degrees) with shape (n_timesteps, n_points).
     Returns:
-        ndarray: Integrated FAC values for each timestep, with shape (n_timesteps, 1).
-        
-        
-    Integrate over up and down currents seperately ofc, total should be 0
+        tuple: Integrated FAC values for each timestep (out_currents, in_currents), 
+               each with shape (n_timesteps, 1).
     """
     n_timesteps, n_points = FACs.shape
+    print(f"FACs shape: {FACs.shape}")
+    print(f"co_latitudes shape: {co_latitudes.shape}")
+    print(f"longitudes shape: {longitudes.shape}")
     
-    out_currents = FACs.copy()
-    out_currents[out_currents < 0] = 0
+    # Mask invalid (nan) values
+    valid_mask = ~np.isnan(FACs) & ~np.isnan(co_latitudes) & ~np.isnan(longitudes)
+    print(f"valid_mask shape: {valid_mask.shape}")
     
-    in_currents = FACs.copy()
-    in_currents[in_currents > 0] = 0
+    # Replace invalid values with 0 for integration (they won't contribute due to the mask)
+    FACs = np.where(valid_mask, FACs, 0)
+    co_latitudes = np.where(valid_mask, co_latitudes, 0)
+    longitudes = np.where(valid_mask, longitudes, 0)
+    
+    # Separate out and in currents
+    out_currents = np.where(FACs > 0, FACs, 0)
+    in_currents = np.where(FACs < 0, FACs, 0)
+    print(f"out_currents shape: {out_currents.shape}")
+    print(f"in_currents shape: {in_currents.shape}")
     
     # Convert co-latitudes and longitudes to radians
     theta = np.radians(co_latitudes)
     phi = np.radians(longitudes)
+    print(f"theta shape: {theta.shape}")
+    print(f"phi shape: {phi.shape}")
     
     # Compute weights based on spherical coordinates
     dtheta = np.abs(np.gradient(theta, axis=1))  # Spacing in theta (along spatial points)
     dphi = np.abs(np.gradient(phi, axis=1))      # Spacing in phi (along spatial points)
     weights = np.sin(theta) * dtheta * dphi      # Area element in spherical coordinates
+    print(f"weights shape: {weights.shape}")
     
-    # Ensure weights are normalized to the total cap area
-    cap_area = 2 * np.pi * (1 - np.cos(np.max(theta)))  # Total polar cap area
-    weights /= np.sum(weights) / cap_area              # Normalize weights
+    # Mask weights for invalid points
+    weights = np.where(valid_mask, weights, 0)
+    print(f"weights after masking shape: {weights.shape}")
+    
+    # Normalize weights for each timestep
+    cap_area = 2 * np.pi * (1 - np.cos(np.nanmax(theta, axis=1, keepdims=True)))  # Total polar cap area per timestep
+    weights_sum = np.nansum(weights, axis=1, keepdims=True)  # Sum of weights per timestep
+    weights /= weights_sum / cap_area  # Normalize weights
+    print(f"weights after normalization shape: {weights.shape}")
     
     # Perform the weighted integration over the spatial dimension (axis=1)
     integrated_out_currents = np.nansum(out_currents * weights, axis=1, keepdims=True)
     integrated_in_currents = np.nansum(in_currents * weights, axis=1, keepdims=True)
+    print(f"integrated_out_currents shape: {integrated_out_currents.shape}")
+    print(f"integrated_in_currents shape: {integrated_in_currents.shape}")
     
     return integrated_out_currents, integrated_in_currents
 
@@ -233,16 +257,16 @@ def moving_average(data, window_size):
 
 
 #%%
+
+"""
+2012, 2016 & 2020 were leap-years
+"""
 # dt = 2 min
 # 2012 is broken, file 20120125
 # 2019 aswell, file 20190520
 # year_index = 0 is 2009, 4 is 2013
-"""
-2012, 2016 & 2020 were leap-years
-"""
-
 Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 4, 
-                                                                   nr_days = 3,
+                                                                   nr_days = 365,
                                                                    directory_path = AMPERE_PATH)  
 #%%
 Jpar_downsampled = Jpar#[::2] # dt = 4 min * 5
@@ -269,6 +293,8 @@ fin = -1
 integrated_out_Jpar, integrated_in_Jpar= integrate_FACs(Jpar_downsampled[:fin], 
                       cLat_deg_downsampled[:fin], lon_deg_downsampled[:fin])
 
+integrated_out_Jpar = integrated_out_Jpar.flatten()
+integrated_in_Jpar = integrated_in_Jpar.flatten()
 
 plt.plot(integrated_out_Jpar)
 plt.plot(integrated_in_Jpar)
@@ -277,8 +303,9 @@ plt.show()
 
 norm_out = mean_norm(integrated_out_Jpar)
 norm_in = mean_norm(integrated_in_Jpar)
+
 plt.plot(norm_out)
-plt.plot(norm_in)
+plt.plot(norm_in, alpha = 0.5)
 plt.show()
 
 
@@ -286,9 +313,9 @@ window_size = 15
 
 smoothed_out = moving_average(norm_out.flatten(), window_size)
 smoothed_in = moving_average(norm_in.flatten(), window_size)
-
+#%%
 plt.plot(smoothed_out)
-plt.plot(smoothed_in)
+plt.plot(smoothed_in, alpha = 0.5)
 plt.show()
 
 #%%
@@ -299,18 +326,94 @@ e.g mean([1, NaN, 3]) = 2, where mean([NaN, NaN, NaN]) = NaN
 
 #%%
 
-omni_data = pod.GetOMNI([2010, 2022], Res = 1)
+# Reads in OMNI data with a time resolution of 1 minute
+# DOES NOT HAVE TO BE READ IN MORE THAN ONCE PER KERNEL
+omni_data = pod.GetOMNI([2013, 2022], Res = 1)
+
+
+AE = omni_data.AE
+AL = omni_data.AL
+AU = omni_data.AU
+B = omni_data.B
+Bx = omni_data.BxGSE
+By = omni_data.ByGSE
+Bz = omni_data.BzGSE
+Vx = omni_data.Vx
+Vy = omni_data.Vy
+Vz = omni_data.Vz
+
+
+interp_len = 15
+
+AE_interp = interpolate_nans(AE, interp_len)
+AL_interp = interpolate_nans(AL, interp_len)
+AU_interp = interpolate_nans(AU, interp_len)
+
+B_interp = interpolate_nans(B, interp_len)
+Bx_interp = interpolate_nans(Bx, interp_len)
+By_interp = interpolate_nans(By, interp_len)
+Bz_interp = interpolate_nans(Bz, interp_len)
+Vx_interp = interpolate_nans(Vx, interp_len)
+Vy_interp = interpolate_nans(Vy, interp_len)
+Vz_interp = interpolate_nans(Vz, interp_len)
+
+#%%
+integrated_out_Jpar = integrated_out_Jpar.flatten()
+integrated_in_Jpar = integrated_in_Jpar.flatten()
+
+train_start = 0
+train_end = len(Jpar)  - 1
+
+# AU Does not contain NaNs
+AE_train = AE_interp[0][::2][train_start:train_end]
+AL_train = AL_interp[0][::2][train_start:train_end]
+AU_train = AU_interp[0][::2][train_start:train_end]
+
+B_train = B_interp[0][::2][train_start:train_end]
+Bx_train = Bx_interp[0][::2][train_start:train_end]
+By_train = By_interp[0][::2][train_start:train_end]
+Bz_train = Bz_interp[0][::2][train_start:train_end]
+Vx_train = Vx_interp[0][::2][train_start:train_end]
+Vy_train = Vy_interp[0][::2][train_start:train_end]
+Vz_train = Vz_interp[0][::2][train_start:train_end]
+
+AE_train = mean_norm(AE_train)
+AL_train = mean_norm(AL_train)
+AU_train = mean_norm(AU_train)
+
+B_train = mean_norm(B_train)
+Bx_train = mean_norm(Bx_train)
+By_train = mean_norm(By_train)
+Bz_train = mean_norm(Bz_train)
+Vx_train = mean_norm(Vx_train)
+Vy_train = mean_norm(Vy_train)
+Vz_train = mean_norm(Vz_train)
+
+AE_smoothed = moving_average(AE_train, window_size)
+AL_smoothed = moving_average(AL_train, window_size)
+AU_smoothed = moving_average(AU_train, window_size)
+
+B_smoothed = moving_average(B_train, window_size)
+Bx_smoothed = moving_average(Bx_train, window_size)
+By_smoothed = moving_average(By_train, window_size)
+Bz_smoothed = moving_average(Bz_train, window_size)
+Vx_smoothed = moving_average(Vx_train, window_size)
+Vy_smoothed = moving_average(Vy_train, window_size)
+Vz_smoothed = moving_average(Vz_train, window_size)
+
+#%%
+print(omni_data.dtype.names)
 
 #%%
 
 # Read in control data
 # Need complex for taking sqrt of negative values
 
-Vx = np.array(Vx_interp, dtype=complex)[:Jpar_downsampled.shape[0]]
-n = np.array(n_interp, dtype=complex)[:Jpar_downsampled.shape[0]]
+Vx_calc = -Vx_smoothed
+#n = np.array(n_interp, dtype=complex)[:Jpar_downsampled.shape[0]]
 
 # Should redefine coordinates so Vx is always positive for calculating funcs like E_WAV_sqrt
-v = -Vx
+v = Vx_calc
 
 """
 Fit some sort of polynomial to the smoothed n points before and after a nan interval
@@ -319,14 +422,14 @@ Jpar varies too much.
 """
 
 #%%
-reconnection_voltage = Milan_coupling(By, Bz, Vx)
+reconnection_voltage = Milan_coupling(By_smoothed, Bz_smoothed, Vx_smoothed)
 
-theta_c = np.arctan2(By, Bz)
+theta_c = np.arctan2(By_smoothed, Bz_smoothed)
 
 sin_squared = np.sin(theta_c/2)**2
 sin_4th = np.sin(theta_c/2)**4
 
-Bs = Bz
+Bs = Bz_smoothed.copy()
 Bs[Bs>0] = 0
 
 HWR = v * Bs
@@ -335,10 +438,10 @@ HWR[HWR == -0] = 0
 Bs_delayed = delay_control_data(Bs, 7, 1)
 
 
-B_T = np.sqrt(Bx.real**2 + By**2 + Bz**2)
-B = Bz
+B_T = np.sqrt(Bx_smoothed.real**2 + By_smoothed**2 + Bz_smoothed**2)
+B = Bz_smoothed
 
-p = n * v**2/2
+#p = n * v**2/2
 
 epsilon_1 = v * B**2 * sin_4th
 epsilon_2 = v * B_T**2 * sin_4th
@@ -349,21 +452,29 @@ sw_e_field = v * B_T
 E_KL = v * B_T * sin_squared
 E_KL_sqrt = np.sqrt(E_KL)
 
-E_KLV = v**(4/3) * B_T * sin_squared * p**(1/6)
+#E_KLV = v**(4/3) * B_T * sin_squared * p**(1/6)
 
 E_WAV =  v * B_T * sin_4th
 E_WAV_squared = E_WAV**2
 E_WAV_sqrt = np.sqrt(E_WAV)
 
-E_WV = v**(4/3) * B_T * sin_4th * p**(1/6)
+#E_WV = v**(4/3) * B_T * sin_4th * p**(1/6)
 
-E_SR = v * B_T * sin_4th * p**(1/2)
+#E_SR = v * B_T * sin_4th * p**(1/2)
 
-E_TL = n**(1/2) * v**2 * B_T * np.sin(theta_c/2)**6
+#E_TL = n**(1/2) * v**2 * B_T * np.sin(theta_c/2)**6
+
 
 
 #%%
+"""
+Old SINDy definitions, for current points without integration
 
+Keep just in case
+
+DO NOT RUN
+
+"""
 # Define SINDY model parameters
 dt = 4
 
@@ -371,10 +482,10 @@ my_library = ps.CustomLibrary([lambda x: np.sin(x), #lambda x, y: np.sin(x + y),
                                lambda x: np.exp(x), lambda x: 1/(1e-6 + x)])
 
 """
-3 timesteps of the full system needs 1.92 TiB (1.1TB)smoother_kws={'window_length': 5} RAM to model.
+3 timesteps of the full system needs more than 1.92 TiB (1.1TB) RAM to model.
 """
-training_start = 0
-training_end = len(Jpar_downsampled[:, 0])
+training_start = train_start
+training_end = train_end
 
 pos_index = 1130 # Which position to attempt to model
 J_11 = Jpar_downsampled[training_start:training_end, pos_index] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
@@ -424,15 +535,39 @@ for i in range(len(Bs_clean)):
 
 # Delay the input data
 u_delayed = u#delay_control_data(u, nr_of_delays = 1, delay_indexes = 1)
+#%%
+training_start = train_start
+training_end = train_end - 14
+pos_index = 1130 # Which position to attempt to model
+J_11 = Jpar_downsampled[training_start:training_end, pos_index] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
+#t = np.arange(training_start * 10, training_end * 10,  10)
 
-spatial_grid = np.arange(0, 3, step = 1)               # Tro to do a north-south line of 3 points
-temporal_grid = np.arange(0, min_length * dt, step = 1 * dt)
+# The closest measured currents to the "main" (attempted) modelled current, main current = J_11
+J_21 = Jpar_downsampled[training_start:training_end, pos_index + 1]  # 1 down
+J_01 = Jpar_downsampled[training_start:training_end, pos_index - 1]  # 1 up
+J_12 = Jpar_downsampled[training_start:training_end, pos_index + 50] # 1 to the right
+J_10 = Jpar_downsampled[training_start:training_end, pos_index - 50] # 1 to the left
+# Diagonals:
+J_20 = Jpar_downsampled[training_start:training_end,pos_index - 50 - 1]
+J_00 = Jpar_downsampled[training_start:training_end,pos_index - 50 + 1]
+J_22 = Jpar_downsampled[training_start:training_end,pos_index + 50 - 1]
+J_02 = Jpar_downsampled[training_start:training_end,pos_index + 50 + 1]
 
-spatial, temporal = np.meshgrid(spatial_grid, temporal_grid, indexing = "ij")
 
-spatio_temporal_grid = np.stack((spatial, temporal), axis=-1)
+traj_len = 1000
 
-print("Shape of spatio_temporal_grid:", spatio_temporal_grid.shape)
+split_data = subset_data([J_11, J_21, J_01, J_12, J_10, J_20, J_00, J_22, J_02,
+                          v, B_smoothed], traj_len, 1)
+nr_of_X = 5
+
+print(f"The number of trajectories are: {len(split_data[0])}")
+
+for i in range(len(split_data)):
+    plt.plot(split_data[i][0], label=f"Input {i + 1}")
+plt.title("First trajectory of all inputs")
+plt.legend()
+plt.tight_layout()
+plt.show()
 
 """
 X, T = np.meshgrid(x, t, indexing = "ij")
@@ -452,23 +587,58 @@ pySINDy does not currently support different spatiotemporal grids for trajectori
 # Otherwise I must construct the system rows by projecting data onto weak samples.
 # w_ik^v = \int_Omega_k theta(x;t) X^v(x;t) d^D x dt eq. 5 in SINDyCP paper
 
-optimizer = ps.EnsembleOptimizer(opt=  ps.SR3(reg_weight_lam= 0.03,relax_coeff_nu=5,
+if nr_of_X > 1:
+    X = []
+    u = []
+    for i in range(len(split_data[0])): # For each trajectory
+        # Stacks the control inputs for each trajectory
+        Xs =  np.vstack([split_data[j][i] for j in range(0, nr_of_X)]).T
+        
+        inputs =  np.vstack([split_data[j][i] for j in range(nr_of_X, len(split_data))]).T
+        
+        # Appends the control inputs for each trajectory to a list containing all trajectories
+        X.append(Xs)
+        u.append(inputs)
+    
+else:
+    X = split_data[0]
+    u = []
+    for i in range(len(split_data[0])): # For each trajectory
+        # Stacks the control inputs for each trajectory
+        inputs =  np.vstack([split_data[j][i] for j in range(1, len(split_data))]).T
+        
+        # Appends the control inputs for each trajectory to a list containing all trajectories
+        u.append(inputs)
+    
+u_delayed = u # Legacy, keep incase want to add delays to the inputs again
+
+dt = 1
+
+spatial_grid = np.arange(0, 3, step = 1)      # To to do a north-south line of 3 points
+temporal_grid = np.arange(0, len(X[0]) * dt, step = 1 * dt)
+
+spatial, temporal = np.meshgrid(spatial_grid, temporal_grid, indexing = "ij")
+
+spatio_temporal_grid = np.stack((spatial, temporal), axis=-1)
+
+print("Shape of spatio_temporal_grid:", spatio_temporal_grid.shape)
+
+optimizer = ps.EnsembleOptimizer(opt=  ps.SR3(#reg_weight_lam= 0.03,relax_coeff_nu=5,
                                              regularizer="L2"), 
-                                 bagging=True, library_ensemble=True,
-                                 n_models = 20) # Default aggregator is median
+                                 bagging=True, library_ensemble=True,   
+                                 n_models = 1000) # Default aggregator is median
 
 feature_names = None
 
 # Finite difference amplifies noise in data.
-differentiation_method = ps.SmoothedFiniteDifference(smoother_kws={'window_length': 5})
+differentiation_method = ps.SmoothedFiniteDifference()#smoother_kws={'window_length': 20})
 
 #H_xt = np.array([1, 2])  # Adjust these values if necessary
 # Only temporal grid gives dx/dt = 1/2 dx/dt + 1/2 dx/dt, R² = 1
-lib = ps.WeakPDELibrary(function_library=ps.PolynomialLibrary(degree=4),
-                    spatiotemporal_grid=spatio_temporal_grid, # spatio_temporal_grid -> "tuple" has no attribute "shape"
-                    include_interaction = True, include_bias = True,
-                    implicit_terms=True, derivative_order = 0,
-                    )
+lib = ps.WeakPDELibrary(function_library= ps.PolynomialLibrary(degree=3),
+                                   spatiotemporal_grid=temporal_grid,
+                                   derivative_order=2,
+                                   include_bias=True, include_interaction=True)
 
 # Various attempted libraries
 #input_lib = ps.CustomLibrary()

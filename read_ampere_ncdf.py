@@ -229,6 +229,7 @@ def read_Jpar(from_year_index, nr_days, directory_path):
     data with nan where there is missing data.
     
     DEPENDENT ON read_ampere_ncdf 
+    NOT TESTED WITH read_ampere_ncdf_xarray
 
     Parameters
     ----------

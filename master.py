@@ -10,11 +10,9 @@ import pysindy as ps
 
 import numpy as np
 import matplotlib.pyplot as plt
-from read_ampere_ncdf import read_ampere_ncdf
+from read_ampere_ncdf import read_Jpar
 from pathlib import Path
-import re
-from zipfile import ZipFile
-from tempfile import TemporaryDirectory
+
 import os
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature 
@@ -28,6 +26,10 @@ import glob
 import pyomnidata as pod
 from nan_handling import find_nans, interpolate_nans, find_overlapping_clean_data, subset_data
 
+import warnings
+from pysindy.utils._axes import AxesWarning
+
+warnings.filterwarnings("ignore", category=AxesWarning)
 
 """
 Look at solar zenith angle to see if I can put that in as a driver aswell.
@@ -41,195 +43,8 @@ They more than likely do
 pod.UpdateLocalData()
 
 AMPERE_PATH = "/nfs/revontuli/data/bjorn/Ampere"
-IMF_PATH = "/nfs/revontuli/data/bjorn/ACE/B_IMF"
-P_SW_PATH = "/nfs/revontuli/data/bjorn/ACE/P_SW"
-
-amp_root = Path(AMPERE_PATH)
-imf_root = Path(IMF_PATH)
-p_sw_root = Path(P_SW_PATH)
 
 fontsize = 20
-
-
-# 2009 has incomplete data
-def read_Jpar(from_year_index, nr_days):
-    """
-    Reads Ampere data, handles missing data and returns the Birkeland current
-    data with nan where there is missing data.
-
-    Parameters
-    ----------
-    from_year_index : int
-        index of the year to start reading from
-    nr_days : int
-        number of days of data to read 
-
-    Returns
-    -------
-    Jpar : np.array
-        Array of Birkeland currents for 1200 positions each dt
-    geo_clat_deg : np.array
-        Array of satellite co-latitude for 1200 positions each dt
-    geo_lon_deg : np.array
-        Array of satellite longitude for 1200 positions each dt
-    missing_full_days : TYPE
-        DESCRIPTION.
-    missing_indices : TYPE
-        DESCRIPTION.
-
-    """
-    # Reading in Ampere data:
-    year_dirs = [d for d in amp_root.iterdir() if d.is_dir() and re.fullmatch(r"\d{4}", d.name)]
-    
-    #dB_Naagcm_list = []
-    #dB_Eaagcm_list = []
-    missing_dates = []
-    missing_points = []
-    missing_indices = []
-    
-    Jpar = np.zeros((nr_days * 720, 1200))
-    geo_cLat_deg = np.zeros((nr_days * 720, 1200))
-    geo_lon_deg = np.zeros((nr_days * 720, 1200))
-    
-    """
-    read_ampere function breaks for day 22 in 2012. Seems to work for all of 2010-2011
-    aswell as 2013+
-    
-    2009 is missing a lot of days
-    """
-    i = 0 # Counts how many days have passed
-    stop_val =  nr_days # Number of days to process
-    prev_date = None
-    for year in sorted(year_dirs, key=lambda p: int(p.name))[from_year_index:]: # Filter out 2009, by using [1:]
-        print(f"Year: {year.name}")
-        
-        with TemporaryDirectory() as tmp:
-            tmpdir = Path(tmp)
-            
-            for zip_path in sorted(year.glob("*north.grd.zip")):
-                #print(f"  Zip: {zip_path.name}")
-                
-                with ZipFile(zip_path) as zf:
-                    members = [m for m in zf.namelist() if m.lower().endswith((".nc", ".ncdf"))]
-                    
-                    for member in sorted(members):
-                        extracted_path = tmpdir / member
-                        extracted_path.parent.mkdir(parents=True, exist_ok=True)
-                        zf.extract(member, path=tmpdir)
-                        print(f"    Extracted: {member} -> {extracted_path}")
-                        
-                        date = re.search(r"(\d{4})(\d{2})(\d{2})", member)
-                        
-                        # Some days are missing within the dataset(s), this returns the missing dates
-                        if prev_date:
-                            # Checks wether there are any days missing
-                            day = int(date.group(3))
-                            prev_day = int(prev_date.group(3))
-                            
-                            diff = day - prev_day
-                            
-                            # If there are days missing, returns the dates and indices
-                            while diff > 1:
-                                diff = diff - 1
-                                missing_day = day - diff
-                                
-                                month = int(date.group(2))
-                                year = int(date.group(1))
-                                
-                                missing_date = int(f"{year:04d}{month:02d}{missing_day:02d}")
-                                missing_dates.append(missing_date)
-                                
-                                # returns the indices the missing days would have occupied if they were not missing
-                                start_indice = missing_day * 720
-                                end_indice = start_indice + 720 
-                                
-                                indices_for_missing_day = np.arange(start_indice, end_indice, 1) 
-                                missing_indices.extend(indices_for_missing_day)
-                                
-                                Jpar[start_indice:end_indice] = np.nan
-                                geo_cLat_deg[start_indice:end_indice] = np.nan
-                                geo_lon_deg[start_indice:end_indice] = np.nan
-                                
-                                i += 1
-                            
-                        # Pass the full path as a string
-                        data = read_ampere_ncdf(str(extracted_path), OutVars="J")
-                        
-                        # Checks if each day contains the correct amount of time-points
-                        # (720 pr. day for full dataset, 360 for downsampled dataset)
-                        if len(data["Jpar"]) != 720:
-                            expected_points = np.arange(start = 0.0, stop = 24, step = 24/720)
-                            actual_points = np.array(data["time"])
-                            missing_indices_this_day = []
-                            
-                            for idx, point in enumerate(expected_points):
-                                if not np.any(np.isclose(point, actual_points, atol=1e-4)):
-                                    # Shifts the indices forward to the day they are missing from,
-                                    # also shifts them forward by the missing full days
-                                    missing_indice = idx + i * 720
-                                    missing_points.append(point)
-                                    missing_indices.append(missing_indice)
-                                    missing_indices_this_day.append(idx)
-                                    
-                            
-                            start_indice = i * 720
-                            end_indice = start_indice + 720
-                            
-                            actual_indices = np.delete(np.arange(0, 720, 1), 
-                                                       np.array(missing_indices_this_day))
-                            
-                            full_day_data = np.full((720, 1200), np.nan)
-                            full_day_data[actual_indices] = np.array(data["Jpar"])
-                            
-                            full_day_data_cLat = np.full((720, 1200), np.nan)
-                            full_day_data_cLat[actual_indices] = np.array(data["geo_cLat_deg"])
-                            
-                            full_day_data_lon = np.full((720, 1200), np.nan)
-                            full_day_data_lon[actual_indices] = np.array(data["geo_lon_deg"])
-                        
-                        else:
-                            full_day_data = np.array(data["Jpar"])
-                            
-                            full_day_data_cLat = np.array(data["geo_cLat_deg"])
-                            full_day_data_lon = np.array(data["geo_lon_deg"])
-
-                        start_indice = i * 720
-                        end_indice = start_indice + 720
-                        
-                        Jpar[start_indice:end_indice] = full_day_data
-                        geo_cLat_deg[start_indice:end_indice] = full_day_data_cLat
-                        geo_lon_deg[start_indice:end_indice] = full_day_data_lon
-                        #dB_Naagcm_list.append(data["dB_Ngeo"])
-                        #dB_Eaagcm_list.append(data["dB_Egeo"])
-                        
-                        prev_date = date
-                        i += 1
-                        
-                        if i == stop_val:
-                            break
-                    if i == stop_val:
-                        break
-                if i == stop_val:
-                    break
-            if i == stop_val:
-                break
-        if i == stop_val:
-            break
-    
-    #Jpar = np.concatenate(Jpar_list, axis=0)
-    #geo_clat_deg = np.concatenate(geo_cLat_list, axis = 0)
-    #geo_lon_deg = np.concatenate(geo_lon_deg_list, axis = 0)               
-    #dB_Naagcm_all = np.concatenate(dB_Naagcm_list, axis=0)
-    #dB_Eaagcm_all = np.concatenate(dB_Eaagcm_list, axis=0)
-    #print("Final shapes:", dB_Naagcm_all.shape, dB_Eaagcm_all.shape
-    
-    missing_full_days = np.array(missing_dates)
-    missing_indices = np.array(missing_indices)
-    
-    print("Final shapes:", Jpar.shape, geo_cLat_deg.shape, geo_lon_deg.shape)#%%
-    print(f"There are {len(missing_dates)} full days missing and an additional {len(missing_indices)-(len(missing_dates) * 720)} missing indices")
-    
-    return Jpar, geo_cLat_deg, geo_lon_deg, missing_full_days, missing_indices
 
 # Breaks for 2020:
 def read_files(directory, start_year=None, end_year=None):
@@ -369,19 +184,96 @@ def delay_control_data(control_dat, nr_of_delays, delay_indexes):
 
     return delayed_input
 
+def integrate_FACs(FACs, co_latitudes, longitudes):
+    """
+    Integrates field-aligned currents (FACs) over a polar cap region.
+    Parameters:
+        FACs (ndarray): 2D array of FAC values with shape (n_timesteps, n_points).
+        co_latitudes (ndarray): 2D array of co-latitudes (in degrees) with shape (n_timesteps, n_points).
+        longitudes (ndarray): 2D array of longitudes (in degrees) with shape (n_timesteps, n_points).
+    Returns:
+        tuple: Integrated FAC values for each timestep (out_currents, in_currents), 
+               each with shape (n_timesteps, 1).
+    """
+    n_timesteps, n_points = FACs.shape
+    print(f"FACs shape: {FACs.shape}")
+    print(f"co_latitudes shape: {co_latitudes.shape}")
+    print(f"longitudes shape: {longitudes.shape}")
+    
+    # Mask invalid (nan) values
+    valid_mask = ~np.isnan(FACs) & ~np.isnan(co_latitudes) & ~np.isnan(longitudes)
+    print(f"valid_mask shape: {valid_mask.shape}")
+    
+    # Replace invalid values with 0 for integration (they won't contribute due to the mask)
+    FACs = np.where(valid_mask, FACs, 0)
+    co_latitudes = np.where(valid_mask, co_latitudes, 0)
+    longitudes = np.where(valid_mask, longitudes, 0)
+    
+    # Separate out and in currents
+    out_currents = np.where(FACs > 0, FACs, 0)
+    in_currents = np.where(FACs < 0, FACs, 0)
+    print(f"out_currents shape: {out_currents.shape}")
+    print(f"in_currents shape: {in_currents.shape}")
+    
+    # Convert co-latitudes and longitudes to radians
+    theta = np.radians(co_latitudes)
+    phi = np.radians(longitudes)
+    print(f"theta shape: {theta.shape}")
+    print(f"phi shape: {phi.shape}")
+    
+    # Compute weights based on spherical coordinates
+    dtheta = np.abs(np.gradient(theta, axis=1))  # Spacing in theta (along spatial points)
+    dphi = np.abs(np.gradient(phi, axis=1))      # Spacing in phi (along spatial points)
+    weights = np.sin(theta) * dtheta * dphi      # Area element in spherical coordinates
+    print(f"weights shape: {weights.shape}")
+    
+    # Mask weights for invalid points
+    weights = np.where(valid_mask, weights, 0)
+    print(f"weights after masking shape: {weights.shape}")
+    
+    # Normalize weights for each timestep
+    cap_area = 2 * np.pi * (1 - np.cos(np.nanmax(theta, axis=1, keepdims=True)))  # Total polar cap area per timestep
+    weights_sum = np.nansum(weights, axis=1, keepdims=True)  # Sum of weights per timestep
+    weights /= weights_sum / cap_area  # Normalize weights
+    print(f"weights after normalization shape: {weights.shape}")
+    
+    # Perform the weighted integration over the spatial dimension (axis=1)
+    integrated_out_currents = np.nansum(out_currents * weights, axis=1, keepdims=True)
+    integrated_in_currents = np.nansum(in_currents * weights, axis=1, keepdims=True)
+    print(f"integrated_out_currents shape: {integrated_out_currents.shape}")
+    print(f"integrated_in_currents shape: {integrated_in_currents.shape}")
+    
+    return integrated_out_currents, integrated_in_currents
+
+
+def mean_norm(data):
+    norm = (data - np.nanmean(data))/np.nanmean(data)
+    
+    return norm
+
+def moving_average(data, window_size):
+    return np.convolve(data, np.ones(window_size)/window_size, mode='valid')
+
+
+
 #%%
+
+"""
+2012, 2016 & 2020 were leap-years
+"""
 # dt = 2 min
 # 2012 is broken, file 20120125
 # 2019 aswell, file 20190520
 # year_index = 0 is 2009, 4 is 2013
-
-Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 4, nr_days = 3) 
+Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 4, 
+                                                                   nr_days = 365 * 5,
+                                                                   directory_path = AMPERE_PATH)  
 #%%
-Jpar_downsampled = Jpar#[::2] # dt = 4 min * 5
-cLat_deg_downsampled = cLat_deg#[::2]
-lon_deg_downsampled = lon_deg#[::2]
+Jpar_downsampled = Jpar
+cLat_deg_downsampled = cLat_deg
+lon_deg_downsampled = lon_deg
 
-interp_length = 1
+interp_length = 10
 want_coordinates = True
 # If 1 column contains a nan, every column contains nan at the same place
 # find_nans() is bottlenecking, vectorize it at some point
@@ -396,186 +288,131 @@ for column in range(Jpar_downsampled.shape[1]):
                                                       max_nan_length=interp_length)
         
 #%%
-"""
-Integrate over up and down currents seperately ofc, total should be 0
-
-"""
-def integrate_FACsv2(FACs, co_latitudes, longitudes):
-    """
-    Integrates field-aligned currents (FACs) over a polar cap region.
-    Parameters:
-        FACs (ndarray): 2D array of FAC values with shape (n_timesteps, n_points).
-        co_latitudes (ndarray): 1D array of co-latitudes (in degrees) corresponding to the points.
-        longitudes (ndarray): 1D array of longitudes (in degrees) corresponding to the points.
-    Returns:
-        ndarray: Integrated FAC values for each timestep, with shape (n_timesteps, 1).
-    """h
-    n_timesteps, n_points = FACs.shape
-    
-    out_currents = FACs.copy()
-    out_currents[out_currents < 0] = 0
-    
-    in_currents = FACs.copy()
-    in_currents[in_currents > 0] = 0
-    
-    # Convert co-latitudes and longitudes to radians
-    theta = np.radians(co_latitudes)
-    phi = np.radians(longitudes)
-    print(FACs)
-    # Compute weights based on spherical coordinates
-    dtheta = np.abs(np.gradient(theta, axis=1))  # Spacing in theta (along spatial points)
-    dphi = np.abs(np.gradient(phi, axis=1))      # Spacing in phi (along spatial points)
-    weights = np.sin(theta) * dtheta * dphi      # Area element in spherical coordinates
-    
-    # Ensure weights are normalized to the total cap area
-    cap_area = 2 * np.pi * (1 - np.cos(np.max(theta)))  # Total polar cap area
-    weights /= np.sum(weights) / cap_area              # Normalize weights
-    
-    # Perform the weighted integration over the spatial dimension (axis=1)
-    integrated_out_currents = np.nansum(out_currents * weights, axis=1, keepdims=True)
-    integrated_in_currents = np.nansum(in_currents * weights, axis=1, keepdims=True)
-    
-    return integrated_out_currents, integrated_in_currents
 
 fin = -1
-test2 = integrate_FACsv2(Jpar_downsampled[:fin], 
+integrated_out_Jpar, integrated_in_Jpar= integrate_FACs(Jpar_downsampled[:fin], 
                       cLat_deg_downsampled[:fin], lon_deg_downsampled[:fin])
 
+integrated_out_Jpar = integrated_out_Jpar.flatten()
+integrated_in_Jpar = integrated_in_Jpar.flatten()
 
-#%%
-def mean_norm(data):
-    norm = (data - np.nanmean(data))/np.nanmean(data)
-    
-    return norm
-
-def moving_average(data, window_size):
-    return np.convolve(data, np.ones(window_size)/window_size, mode='valid')
-
-
-plt.plot(test2[0])
-plt.plot(test2[1])
+plt.plot(integrated_out_Jpar)
+plt.plot(integrated_in_Jpar)
 plt.show()
 
 
-norm_test1 = mean_norm(test2[0])
-norm_test2 = mean_norm(test2[1])
-plt.plot(norm_test1)
-plt.plot(norm_test2)
+norm_out = mean_norm(integrated_out_Jpar)
+norm_in = mean_norm(integrated_in_Jpar)
+
+plt.plot(norm_out)
+plt.plot(norm_in, alpha = 0.5)
 plt.show()
 
 
 window_size = 15
 
-avg1 = moving_average(norm_test1.flatten(), window_size)
-avg2 = moving_average(norm_test2.flatten(), window_size)
-
-plt.plot(avg1)
-plt.plot(avg2)
+smoothed_out = moving_average(norm_out.flatten(), window_size)
+smoothed_in = moving_average(norm_in.flatten(), window_size)
+#%%
+plt.plot(smoothed_out)
+plt.plot(smoothed_in, alpha = 0.5)
 plt.show()
 
 #%%
-
-plt.plot(Jpar_downsampled[:fin])
-plt.show()
-
-#%%
-year_data = read_files(IMF_PATH, start_year=2013, end_year=2013) # dt = 4min
-#year_data_interp = year_data.interpolate(method = "linear") #dt = 4 min 
-#year_data = np.array(year_data_interp)
-
-"""
-2012, 2016 & 2020 were leap-years
-"""
-
-#%%
-print(Jpar.shape)
-
-#%%
-# Reads in additional ACE parameters
-# File names are nonsensical, therefore all 14 years havsmoother_kws={'window_length': 5}e to be read in at once and then sorted
-# Luckily the reading is fairly quick.
-# 1 measurement every 64 seconds, 0.9375 samples pr. min
-
-p_sw_file_list = glob.glob("/nfs/revontuli/data/bjorn/ACE/P_SW/*.zip")  # Reads any zip file
-data_frames = []
-for file in p_sw_file_list: # Reads in the zip files
-    df = pd.read_csv(
-        file,
-        skiprows=31,
-        delimiter=r"\s+",
-        names=["Year", "day", "hour", "min", "sec",
-               "Density_proton", "T_proton",
-               "VGSE_X", "VGSE_Y", "VGSE_Z",
-               "VGSM_X", "VGSM_Y", "VGSM_Z",
-               "GSE_X", "GSE_Y", "GSE_Z"]
-    )
-    data_frames.append(df)
-combined_p_sw_data = pd.concat(data_frames, ignore_index=True) # Concats the years, sorts them below
-P_SW_data = combined_p_sw_data.sort_values(by=["Year", "day", "hour", "min", "sec"]).reset_index(drop=True) # 1 sample every 64 seconds
-
-# Convert -9999 to nan
-P_SW_data[P_SW_data == -9999.9] = np.nan
-
-# add DatetimeIndex for easy resampling
-P_SW_data["datetime"] = pd.to_datetime(P_SW_data["Year"].astype(str)) + pd.to_timedelta(P_SW_data["day"] - 1, unit="D") \
-    + pd.to_timedelta(P_SW_data["hour"], unit="h") + pd.to_timedelta(P_SW_data["min"], unit="m") \
-        + pd.to_timedelta(P_SW_data["sec"], unit="s")
-     
-P_SW_data = P_SW_data.drop(columns=["Year", "day", "hour", "min", "sec"]) # Drop old date columns
-P_SW_data.set_index("datetime", inplace=True)
-
-#%%
-
-P_SW_filtered = P_SW_data.loc["2013-01-01":"2013-12-31"]
-
-#%%
-
-P_SW_filtered.loc[:, "Density_proton"], nan_start_n, nan_end_n, nan_lengths_n, no_nan_lengths_n = interpolate_nans(np.array(P_SW_filtered["Density_proton"]),
-                                                                                        max_nan_length=interp_length)
-P_SW_filtered.loc[:, "VGSM_X"], nan_start_v, nan_endKL_v, nan_lengths_v, no_nan_lengths_v = interpolate_nans(np.array(P_SW_filtered["VGSM_X"]),
-                                                                                        max_nan_length=interp_length)
-
-print(np.mean(no_nan_lengths_n))
-print(np.mean(no_nan_lengths_v))
-
-# Resample to 4min:
-#P_SW_data_interp = P_SW_interp.resample("4min").mean()
-
 """
 pandas.resample() treats NaN as 0.
-e.g mean([1, NaN, 3]) = 2, where mean([NaN, NaN, NaN]) = NaN
+e.g mean([1, NaN, 3]) = 2, where mean([NaN, NaN, 
+
+NaN]) = NaN
 """
 
 #%%
 
-omni_data = pod.GetOMNI([2010, 2022], Res = 1)
+# Reads in OMNI data with a time resolution of 1 minute
+# DOES NOT HAVE TO BE READ IN MORE THAN ONCE PER KERNEL
+omni_data = pod.GetOMNI([2013, 2022], Res = 1)
+
+
+AE = omni_data.AE
+AL = omni_data.AL
+AU = omni_data.AU
+B = omni_data.B
+Bx = omni_data.BxGSE
+By = omni_data.ByGSE
+Bz = omni_data.BzGSE
+Vx = omni_data.Vx
+Vy = omni_data.Vy
+Vz = omni_data.Vz
+
+
+interp_len = 15
+
+AE_interp = interpolate_nans(AE, interp_len)
+AL_interp = interpolate_nans(AL, interp_len)
+AU_interp = interpolate_nans(AU, interp_len)
+
+B_interp = interpolate_nans(B, interp_len)
+Bx_interp = interpolate_nans(Bx, interp_len)
+By_interp = interpolate_nans(By, interp_len)
+Bz_interp = interpolate_nans(Bz, interp_len)
+Vx_interp = interpolate_nans(Vx, interp_len)
+Vy_interp = interpolate_nans(Vy, interp_len)
+Vz_interp = interpolate_nans(Vz, interp_len)
 
 #%%
 
-# Read in control data
-# Need complex for taking sqrt of negative values
-Bx = np.array(year_data["Bgsm_x"][:Jpar_downsampled.shape[0]], dtype=complex)
-By = np.array(year_data["Bgsm_y"][:Jpar_downsampled.shape[0]])
-Bz = np.array(year_data["Bgsm_z"][:Jpar_downsampled.shape[0]])
-Bz[Bz<-200] = 0
+train_start = 0
+train_end = len(Jpar)  - 1
 
-Bx[Bx<-100] = 0
-By[By<-100] = 0
-smoother_kws={'window_length': 5}
-"""
-Bx = np.delete(Bx, rows_with_nan)
-By = np.delete(By, rows_with_nan)
-Bz = np.delete(Bz, rows_with_nan)
-"""
+# AU Does not contain NaNs
+AE_train = AE_interp[0][::2][train_start:train_end]
+AL_train = AL_interp[0][::2][train_start:train_end]
+AU_train = AU_interp[0][::2][train_start:train_end]
 
-Vx_interp =  P_SW_filtered["VGSM_X"].resample("4min").mean()
-n_interp = P_SW_filtered["Density_proton"].resample("4min").mean()
+B_train = B_interp[0][::2][train_start:train_end]
+Bx_train = Bx_interp[0][::2][train_start:train_end]
+By_train = By_interp[0][::2][train_start:train_end]
+Bz_train = Bz_interp[0][::2][train_start:train_end]
+Vx_train = Vx_interp[0][::2][train_start:train_end]
+Vy_train = Vy_interp[0][::2][train_start:train_end]
+Vz_train = Vz_interp[0][::2][train_start:train_end]
 
-Vx = np.array(Vx_interp, dtype=complex)[:Jpar_downsampled.shape[0]]
-n = np.array(n_interp, dtype=complex)[:Jpar_downsampled.shape[0]]
+AE_train = mean_norm(AE_train)
+AL_train = mean_norm(AL_train)
+AU_train = mean_norm(AU_train)
+
+B_train = mean_norm(B_train)
+Bx_train = mean_norm(Bx_train)
+By_train = mean_norm(By_train)
+Bz_train = mean_norm(Bz_train)
+Vx_train = mean_norm(Vx_train)
+Vy_train = mean_norm(Vy_train)
+Vz_train = mean_norm(Vz_train)
+
+AE_smoothed = moving_average(AE_train, window_size)
+AL_smoothed = moving_average(AL_train, window_size)
+AU_smoothed = moving_average(AU_train, window_size)
+
+B_smoothed = moving_average(B_train, window_size)
+Bx_smoothed = moving_average(Bx_train, window_size)
+By_smoothed = moving_average(By_train, window_size)
+Bz_smoothed = moving_average(Bz_train, window_size)
+Vx_smoothed = moving_average(Vx_train, window_size)
+Vy_smoothed = moving_average(Vy_train, window_size)
+Vz_smoothed = moving_average(Vz_train, window_size)
+
+#%%
+print(omni_data.dtype.names)
+
+#%%
+
+
+
+
+#n = np.array(n_interp, dtype=complex)[:Jpar_downsampled.shape[0]]
 
 # Should redefine coordinates so Vx is always positive for calculating funcs like E_WAV_sqrt
-v = -Vx
+v = -Vx_smoothed
 
 """
 Fit some sort of polynomial to the smoothed n points before and after a nan interval
@@ -584,14 +421,17 @@ Jpar varies too much.
 """
 
 #%%
-reconnection_voltage = Milan_coupling(By, Bz, Vx)
 
-theta_c = np.arctan2(By, Bz)
+# Commented out coupling functions are commented out because I am missing
+# density data
+reconnection_voltage = Milan_coupling(By_smoothed, Bz_smoothed, Vx_smoothed)
+
+theta_c = np.arctan2(By_smoothed, Bz_smoothed)
 
 sin_squared = np.sin(theta_c/2)**2
 sin_4th = np.sin(theta_c/2)**4
 
-Bs = Bz
+Bs = Bz_smoothed.copy()
 Bs[Bs>0] = 0
 
 HWR = v * Bs
@@ -600,10 +440,10 @@ HWR[HWR == -0] = 0
 Bs_delayed = delay_control_data(Bs, 7, 1)
 
 
-B_T = np.sqrt(Bx.real**2 + By**2 + Bz**2)
-B = Bz
+B_T = np.sqrt(Bx_smoothed.real**2 + By_smoothed**2 + Bz_smoothed**2)
+B = Bz_smoothed
 
-p = n * v**2/2
+#p = n * v**2/2
 
 epsilon_1 = v * B**2 * sin_4th
 epsilon_2 = v * B_T**2 * sin_4th
@@ -614,21 +454,27 @@ sw_e_field = v * B_T
 E_KL = v * B_T * sin_squared
 E_KL_sqrt = np.sqrt(E_KL)
 
-E_KLV = v**(4/3) * B_T * sin_squared * p**(1/6)
+#E_KLV = v**(4/3) * B_T * sin_squared * p**(1/6)
 
 E_WAV =  v * B_T * sin_4th
 E_WAV_squared = E_WAV**2
 E_WAV_sqrt = np.sqrt(E_WAV)
 
-E_WV = v**(4/3) * B_T * sin_4th * p**(1/6)
+#E_WV = v**(4/3) * B_T * sin_4th * p**(1/6)
 
-E_SR = v * B_T * sin_4th * p**(1/2)
+#E_SR = v * B_T * sin_4th * p**(1/2)
 
-E_TL = n**(1/2) * v**2 * B_T * np.sin(theta_c/2)**6
-
+#E_TL = n**(1/2) * v**2 * B_T * np.sin(theta_c/2)**6
 
 #%%
+"""
+Old SINDy definitions, for raw current points without integration
 
+Keep just in case
+
+DO NOT RUN
+
+"""
 # Define SINDY model parameters
 dt = 4
 
@@ -636,10 +482,10 @@ my_library = ps.CustomLibrary([lambda x: np.sin(x), #lambda x, y: np.sin(x + y),
                                lambda x: np.exp(x), lambda x: 1/(1e-6 + x)])
 
 """
-3 timesteps of the full system needs 1.92 TiB (1.1TB)smoother_kws={'window_length': 5} RAM to model.
+3 timesteps of the full system needs more than 1.92 TiB (1.1TB) RAM to model.
 """
-training_start = 0
-training_end = len(Jpar_downsampled[:, 0])
+training_start = train_start
+training_end = train_end
 
 pos_index = 1130 # Which position to attempt to model
 J_11 = Jpar_downsampled[training_start:training_end, pos_index] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
@@ -689,15 +535,44 @@ for i in range(len(Bs_clean)):
 
 # Delay the input data
 u_delayed = u#delay_control_data(u, nr_of_delays = 1, delay_indexes = 1)
+#%%
 
-spatial_grid = np.arange(0, 3, step = 1)               # Tro to do a north-south line of 3 points
-temporal_grid = np.arange(0, min_length * dt, step = 1 * dt)
+##### IS NOT SMOOTHED OR NORMED:
+training_start = train_start
+training_end = train_end - 14
+pos_index = 1130 # Which position to attempt to model
+J_11 = Jpar_downsampled[training_start:training_end, pos_index] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
 
-spatial, temporal = np.meshgrid(spatial_grid, temporal_grid, indexing = "ij")
+# The closest measured currents to the "main" (attempted) modelled current, main current = J_11
+J_21 = Jpar_downsampled[training_start:training_end, pos_index + 1]  # 1 down
+J_01 = Jpar_downsampled[training_start:training_end, pos_index - 1]  # 1 up
+J_12 = Jpar_downsampled[training_start:training_end, pos_index + 50] # 1 to the right
+J_10 = Jpar_downsampled[training_start:training_end, pos_index - 50] # 1 to the left
+# Diagonals:
+J_20 = Jpar_downsampled[training_start:training_end,pos_index - 50 - 1]
+J_00 = Jpar_downsampled[training_start:training_end,pos_index - 50 + 1]
+J_22 = Jpar_downsampled[training_start:training_end,pos_index + 50 - 1]
+J_02 = Jpar_downsampled[training_start:training_end,pos_index + 50 + 1]
+#####
 
-spatio_temporal_grid = np.stack((spatial, temporal), axis=-1)
+traj_len = 10000
 
-print("Shape of spatio_temporal_grid:", spatio_temporal_grid.shape)
+split_data = subset_data([smoothed_out,
+                          Vx_smoothed,
+                          B_smoothed, Bz_smoothed,
+                           
+                          ],
+                         traj_len, 1)
+nr_of_X = 1
+
+print(f"The number of trajectories are: {len(split_data[0])}")
+
+for i in range(len(split_data)):
+    plt.plot(split_data[i][0], label=f"Input {i + 1}")
+plt.title("First trajectory of all inputs")
+plt.legend()
+plt.tight_layout()
+plt.show()
 
 """
 X, T = np.meshgrid(x, t, indexing = "ij")
@@ -717,23 +592,58 @@ pySINDy does not currently support different spatiotemporal grids for trajectori
 # Otherwise I must construct the system rows by projecting data onto weak samples.
 # w_ik^v = \int_Omega_k theta(x;t) X^v(x;t) d^D x dt eq. 5 in SINDyCP paper
 
-optimizer = ps.EnsembleOptimizer(opt=  ps.SR3(reg_weight_lam= 0.03,relax_coeff_nu=5,
+if nr_of_X > 1:
+    X = []
+    u = []
+    for i in range(len(split_data[0])): # For each trajectory
+        # Stacks the control inputs for each trajectory
+        Xs =  np.vstack([split_data[j][i] for j in range(0, nr_of_X)]).T
+        
+        inputs =  np.vstack([split_data[j][i] for j in range(nr_of_X, len(split_data))]).T
+        
+        # Appends the control inputs for each trajectory to a list containing all trajectories
+        X.append(Xs)
+        u.append(inputs)
+    
+else:
+    X = split_data[0]
+    u = []
+    for i in range(len(split_data[0])): # For each trajectory
+        # Stacks the control inputs for each trajectory
+        inputs =  np.vstack([split_data[j][i] for j in range(1, len(split_data))]).T
+        
+        # Appends the control inputs for each trajectory to a list containing all trajectories
+        u.append(inputs)
+    
+u_delayed = u # Legacy, keep incase want to add delays to the inputs again
+
+dt = 1
+
+spatial_grid = np.arange(0, 3, step = 1)      # To to do a north-south line of 3 points
+temporal_grid = np.arange(0, len(X[0]) * dt, step = 1 * dt)
+
+spatial, temporal = np.meshgrid(spatial_grid, temporal_grid, indexing = "ij")
+
+spatio_temporal_grid = np.stack((spatial, temporal), axis=-1)
+
+print("Shape of spatio_temporal_grid:", spatio_temporal_grid.shape)
+
+optimizer = ps.EnsembleOptimizer(opt=  ps.SR3(#reg_weight_lam= 0.03,relax_coeff_nu=5,
                                              regularizer="L2"), 
-                                 bagging=True, library_ensemble=True,
-                                 n_models = 20) # Default aggregator is median
+                                 bagging=True, library_ensemble=True,   
+                                 n_models = 1000) # Default aggregator is median
 
 feature_names = None
 
 # Finite difference amplifies noise in data.
-differentiation_method = ps.SmoothedFiniteDifference(smoother_kws={'window_length': 5})
+differentiation_method = ps.SmoothedFiniteDifference()#smoother_kws={'window_length': 20})
 
 #H_xt = np.array([1, 2])  # Adjust these values if necessary
 # Only temporal grid gives dx/dt = 1/2 dx/dt + 1/2 dx/dt, R² = 1
-lib = ps.WeakPDELibrary(function_library=ps.PolynomialLibrary(degree=4),
-                    spatiotemporal_grid=spatio_temporal_grid, # spatio_temporal_grid -> "tuple" has no attribute "shape"
-                    include_interaction = True, include_bias = True,
-                    implicit_terms=True, derivative_order = 0,
-                    )
+lib = ps.WeakPDELibrary(function_library= ps.PolynomialLibrary(degree=3),
+                                   spatiotemporal_grid=temporal_grid,
+                                   derivative_order=2,
+                                   include_bias=True, include_interaction=True)
 
 # Various attempted libraries
 #input_lib = ps.CustomLibrary()

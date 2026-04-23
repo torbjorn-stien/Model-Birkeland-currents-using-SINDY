@@ -207,59 +207,100 @@ def find_overlapping_clean_data(arrays, min_length, print_=True):
     return clean_starts, clean_ends, clean_lengths
 
 
-def subset_data(arrays, min_length, overlap, force_overlap = False):
+def subset_data(arrays, min_length, overlap, force_overlap = False, 
+                variable_length_allowed = False, replace_nans = False):
     """
     Parameters
     ----------
     arrays : list
         list of arrays to be split
     min_length : int
-        DESCRIPTION.
+        Minimum length of trajectories, 
+        no effect when using variable length trajectories
     overlap : int
-        DESCRIPTION.
+        How many indexes each trajectory can overlap,
+        no effect when using variable length trajectories
 
-    Returns
+    Returnsdata_temp
     -------
     clean_data_lists : list of lists
-        DESCRIPTION.
+        Python list of lists of arrays, 
+        contained lists contain the trajectories for 
+        the corresponding input data array (confusing wording)
 
     """
     
     # Find overlapping clean data stretches longer than min_len
-    clean_start, clean_end, clean_len = find_overlapping_clean_data(arrays, min_length, print_ = False)
+    clean_start, clean_end, clean_len = find_overlapping_clean_data(arrays, 
+                                                                    min_length, print_ = False)
     
     # Initialize data lists
     clean_data_lists = [[] for _ in range(len(arrays))] 
 
-    # Splits the overlapping clean segments of data so that they all have the same length (the min_length)
-    # (so they can fit on the same temporal grid)
+   
     for i, array in enumerate(arrays):
         for j in range(len(clean_len)):
             
-            if clean_len[j] + overlap >= 2 * min_length: # If there is enough clean data for multiple subsets
-                # Discards excess clean data
-                nr_of_subsets = int((clean_len[j] - min_length)/(min_length - overlap) + 1) # Int rounds down
-
-                subset_start = clean_start[j] # First subset start
-                for k in range(nr_of_subsets):
-                    # Rolling window of clean data over the total available clean data in this stretch
-                    subset_end = subset_start + min_length
+            # Splits data into every single clean trajectory available
+            # NOT COMPATIBLE WITH SPATIO_TEMPORAL GRID FOR WEAKPDELIBRARY, 
+            # then all trajectories must be the same length
+            if variable_length_allowed:
+                # Replaces nans and corresponding indexes in the other arrays with given value,
+                # making 1 single trajectory
+                ###### NOT FINSIHED
+                if replace_nans:
+                    
+                    subset_start = clean_end[j]
+                    
+                    subset_end = clean_start[j]
+                    
+                    array[subset_start:subset_end] = 0                    
+                    
+                    clean_data_lists[i].append()
+                
+                # Keeps nans and splits data into multiple trajectories.   
+                else:
+                    subset_start = clean_start[j]
+                    
+                    subset_end = clean_end[j]
                     
                     data_temp = array[subset_start:subset_end]
-                    # Adds data to the corresponding list
-                    clean_data_lists[i].append(data_temp)
-                    # Moves the start index to the next subset
-                    subset_start += min_length - overlap
                     
-            elif force_overlap == True: # Forces 2 subsets even if overlap is too small to allow 2 subsets
-                data_temp = array[clean_start[j]:clean_start[j] + min_length]
-                clean_data_lists[i].append(data_temp)
-                
-                data_temp = array[clean_end[j] - min_length:clean_end[j]]
-                clean_data_lists[i].append(data_temp)
+                    clean_data_lists[i].append(data_temp)
             
-            else: # Discards excess clean data
-                data_temp = array[clean_start[j]:clean_start[j] + min_length]
-                clean_data_lists[i].append(data_temp)
+            # Splits the overlapping clean segments of data so that they all have the same length (the min_length)
+            # (so they can fit on the same spatio-temporal grid)
+            if not variable_length_allowed:
+                if clean_len[j] + overlap >= 2 * min_length: # If there is enough clean data for multiple subsets
+                    # Discards excess clean data
+                    nr_of_subsets = int((clean_len[j] - min_length)/(min_length - overlap) + 1) # Int rounds down
+        
+                    subset_start = clean_start[j] # First subset start
+                    for k in range(nr_of_subsets):
+                        # Rolling window of clean data over the total available clean data in this stretch
+                        subset_end = subset_start + min_length
+                            
+                        data_temp = array[subset_start:subset_end]
+                        # Adds data to the corresponding list
+                        clean_data_lists[i].append(data_temp)
+                        # Moves the start index to the next subset
+                        subset_start += min_length - overlap
+                            
+                elif force_overlap == True: # Forces 2 subsets even if overlap is too small to allow 2 subsets
+                    data_temp = array[clean_start[j]:clean_start[j] + min_length]
+                    clean_data_lists[i].append(data_temp)
+                        
+                    data_temp = array[clean_end[j] - min_length:clean_end[j]]
+                    clean_data_lists[i].append(data_temp)
     
+                else: # Discards excess clean data
+                    data_temp = array[clean_start[j]:clean_start[j] + min_length]
+                    clean_data_lists[i].append(data_temp)
+                
     return clean_data_lists
+
+
+
+
+
+

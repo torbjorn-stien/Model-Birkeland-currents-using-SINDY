@@ -266,14 +266,14 @@ def moving_average(data, window_size):
 # 2019 aswell, file 20190520
 # year_index = 0 is 2009, 4 is 2013
 Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 4, 
-                                                                   nr_days = 365,
+                                                                   nr_days = 365 * 5,
                                                                    directory_path = AMPERE_PATH)  
 #%%
-Jpar_downsampled = Jpar#[::2] # dt = 4 min * 5
-cLat_deg_downsampled = cLat_deg#[::2]
-lon_deg_downsampled = lon_deg#[::2]
+Jpar_downsampled = Jpar
+cLat_deg_downsampled = cLat_deg
+lon_deg_downsampled = lon_deg
 
-interp_length = 1
+interp_length = 10
 want_coordinates = True
 # If 1 column contains a nan, every column contains nan at the same place
 # find_nans() is bottlenecking, vectorize it at some point
@@ -321,7 +321,9 @@ plt.show()
 #%%
 """
 pandas.resample() treats NaN as 0.
-e.g mean([1, NaN, 3]) = 2, where mean([NaN, NaN, NaN]) = NaN
+e.g mean([1, NaN, 3]) = 2, where mean([NaN, NaN, 
+
+NaN]) = NaN
 """
 
 #%%
@@ -358,8 +360,6 @@ Vy_interp = interpolate_nans(Vy, interp_len)
 Vz_interp = interpolate_nans(Vz, interp_len)
 
 #%%
-integrated_out_Jpar = integrated_out_Jpar.flatten()
-integrated_in_Jpar = integrated_in_Jpar.flatten()
 
 train_start = 0
 train_end = len(Jpar)  - 1
@@ -406,14 +406,13 @@ print(omni_data.dtype.names)
 
 #%%
 
-# Read in control data
-# Need complex for taking sqrt of negative values
 
-Vx_calc = -Vx_smoothed
+
+
 #n = np.array(n_interp, dtype=complex)[:Jpar_downsampled.shape[0]]
 
 # Should redefine coordinates so Vx is always positive for calculating funcs like E_WAV_sqrt
-v = Vx_calc
+v = -Vx_smoothed
 
 """
 Fit some sort of polynomial to the smoothed n points before and after a nan interval
@@ -422,6 +421,9 @@ Jpar varies too much.
 """
 
 #%%
+
+# Commented out coupling functions are commented out because I am missing
+# density data
 reconnection_voltage = Milan_coupling(By_smoothed, Bz_smoothed, Vx_smoothed)
 
 theta_c = np.arctan2(By_smoothed, Bz_smoothed)
@@ -464,11 +466,9 @@ E_WAV_sqrt = np.sqrt(E_WAV)
 
 #E_TL = n**(1/2) * v**2 * B_T * np.sin(theta_c/2)**6
 
-
-
 #%%
 """
-Old SINDy definitions, for current points without integration
+Old SINDy definitions, for raw current points without integration
 
 Keep just in case
 
@@ -536,11 +536,12 @@ for i in range(len(Bs_clean)):
 # Delay the input data
 u_delayed = u#delay_control_data(u, nr_of_delays = 1, delay_indexes = 1)
 #%%
+
+##### IS NOT SMOOTHED OR NORMED:
 training_start = train_start
 training_end = train_end - 14
 pos_index = 1130 # Which position to attempt to model
 J_11 = Jpar_downsampled[training_start:training_end, pos_index] #(time, features) MUST BE (m, n), n > 0 NOT (m, )
-#t = np.arange(training_start * 10, training_end * 10,  10)
 
 # The closest measured currents to the "main" (attempted) modelled current, main current = J_11
 J_21 = Jpar_downsampled[training_start:training_end, pos_index + 1]  # 1 down
@@ -552,13 +553,17 @@ J_20 = Jpar_downsampled[training_start:training_end,pos_index - 50 - 1]
 J_00 = Jpar_downsampled[training_start:training_end,pos_index - 50 + 1]
 J_22 = Jpar_downsampled[training_start:training_end,pos_index + 50 - 1]
 J_02 = Jpar_downsampled[training_start:training_end,pos_index + 50 + 1]
+#####
 
+traj_len = 10000
 
-traj_len = 1000
-
-split_data = subset_data([J_11, J_21, J_01, J_12, J_10, J_20, J_00, J_22, J_02,
-                          v, B_smoothed], traj_len, 1)
-nr_of_X = 5
+split_data = subset_data([smoothed_out,
+                          Vx_smoothed,
+                          B_smoothed, Bz_smoothed,
+                           
+                          ],
+                         traj_len, 1)
+nr_of_X = 1
 
 print(f"The number of trajectories are: {len(split_data[0])}")
 

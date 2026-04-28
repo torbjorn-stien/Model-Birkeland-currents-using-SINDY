@@ -265,6 +265,7 @@ def moving_average(data, window_size):
 # 2012 is broken, file 20120125
 # 2019 aswell, file 20190520
 # year_index = 0 is 2009, 4 is 2013
+# nr_of_days = 365 * 5 gives (1314000, 1200), covers 2013, through 2018
 Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 4, 
                                                                    nr_days = 365 * 5,
                                                                    directory_path = AMPERE_PATH)  
@@ -330,7 +331,7 @@ NaN]) = NaN
 
 # Reads in OMNI data with a time resolution of 1 minute
 # DOES NOT HAVE TO BE READ IN MORE THAN ONCE PER KERNEL
-omni_data = pod.GetOMNI([2013, 2022], Res = 1)
+omni_data = pod.GetOMNI([2013, 2020], Res = 1)
 
 
 AE = omni_data.AE
@@ -439,7 +440,7 @@ HWR[HWR == -0] = 0
 
 Bs_delayed = delay_control_data(Bs, 7, 1)
 
-
+# Check B_T vs B_mag
 B_T = np.sqrt(Bx_smoothed.real**2 + By_smoothed**2 + Bz_smoothed**2)
 B = Bz_smoothed
 
@@ -465,6 +466,35 @@ E_WAV_sqrt = np.sqrt(E_WAV)
 #E_SR = v * B_T * sin_4th * p**(1/2)
 
 #E_TL = n**(1/2) * v**2 * B_T * np.sin(theta_c/2)**6
+
+"""
+Clip the coupling functions, histogram and clip as many sigmas as necessary
+
+Also try smoothing coupling functions
+"""
+
+#%%
+
+def m_m_scaling(data):
+    minimum = np.nanmin(data)
+    maximum = np.nanmax(data)
+    
+    norm = (data - minimum)/(maximum - minimum)
+    return norm
+
+plt.plot(Vx)
+plt.show()
+plt.plot(mean_norm(Vx))
+plt.show()
+plt.plot(m_m_scaling(Vx))
+plt.show()
+
+plt.plot(Vz)
+plt.show()
+plt.plot(mean_norm(Vz))
+plt.show()
+plt.plot(m_m_scaling(Vz))
+plt.show()
 
 #%%
 """
@@ -555,24 +585,107 @@ J_22 = Jpar_downsampled[training_start:training_end,pos_index + 50 - 1]
 J_02 = Jpar_downsampled[training_start:training_end,pos_index + 50 + 1]
 #####
 
-traj_len = 10000
+def replace_nans(arrays, replace_with):
+    """
+    Replace NaNs in all arrays with a specified value. If a NaN exists in any array,
+    the corresponding index in all arrays will be replaced with the specified value.
+    
+    Parameters:
+    -----------
+    arrays : list of numpy arrays
+        List of arrays to process (all should have the same length).
+    replace_with : scalar
+        Value to replace NaNs with.
+    
+    Returns:
+    --------
+    new_arrays_list : list of numpy arrays
+        List of arrays with NaNs replaced.
+    """
+    # Check that all arrays have the same length
+    lengths = [len(arr) for arr in arrays]
+    if len(set(lengths)) != 1:
+        raise ValueError("All arrays must have the same length")
+    
+    array_length = lengths[0]
+    
+    # Create a combined mask where True means there is a NaN in any array at that position
+    combined_nan_mask = np.zeros(array_length, dtype=bool)
+    for arr in arrays:
+        combined_nan_mask |= np.isnan(arr)
+    
+    # Replace values in all arrays based on the combined mask
+    new_arrays_list = []
+    for arr in arrays:
+        new_array = arr.copy()
+        new_array[combined_nan_mask] = replace_with
+        new_arrays_list.append(new_array)  # Append the modified array to the list
+    
+    return new_arrays_list
 
-split_data = subset_data([smoothed_out,
-                          Vx_smoothed,
-                          B_smoothed, Bz_smoothed,
-                           
-                          ],
-                         traj_len, 1)
+
+candidate_arrays = [  smoothed_out,    
+                    Vx[training_start:training_end]
+                    
+                    
+                    ]
+
+"""
+candidate_arrays = []
+
+for pos_index in range(Jpar_downsampled.shape[1]):
+    candidate_arrays.append(Jpar_downsampled[:training_end, pos_index])
+
+candidate_arrays.append(By_smoothed)
+candidate_arrays.append(Vx_smoothed)
+candidate_arrays.append(Vz_smoothed)
+"""
 nr_of_X = 1
 
-print(f"The number of trajectories are: {len(split_data[0])}")
+multiple_trajectories = True
+if multiple_trajectories:
+    
+    traj_len = 10000
+    
+    split_data = subset_data(candidate_arrays,
+                             traj_len, 1, variable_length_allowed=False)
+    """
+                              Best score so far:
+                              Vx_smoothed,
+                              B_smoothed, Bz_smoothed,
+                               Vz_smoothed,
+                              ],
+                             traj_len, 1, variable_length_allowed=False)
+    """
 
-for i in range(len(split_data)):
-    plt.plot(split_data[i][0], label=f"Input {i + 1}")
-plt.title("First trajectory of all inputs")
-plt.legend()
-plt.tight_layout()
-plt.show()
+if not multiple_trajectories:
+    split_data = replace_nans(candidate_arrays, replace_with = 0)
+
+
+
+if multiple_trajectories:
+    print(f"The number of trajectories are: {len(split_data[0])}")
+    
+    for i in range(len(split_data)):
+        plt.plot(split_data[i][0], label=f"Input {i + 1}")
+    plt.title("First trajectory of all inputs")
+    plt.ylim(-1, 1)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+    
+else:
+    print(f"The length of the trajectory is: {len(split_data[0])}")
+    
+    for i in range(len(split_data)):
+        plt.plot(split_data[i][0:10000], label=f"Input {i + 1}")
+    plt.title("First trajectory of all inputs")
+    plt.ylim(-1, 1)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+
 
 """
 X, T = np.meshgrid(x, t, indexing = "ij")
@@ -608,19 +721,31 @@ if nr_of_X > 1:
 else:
     X = split_data[0]
     u = []
-    for i in range(len(split_data[0])): # For each trajectory
-        # Stacks the control inputs for each trajectory
-        inputs =  np.vstack([split_data[j][i] for j in range(1, len(split_data))]).T
+    if multiple_trajectories:
+        for i in range(len(split_data[0])): # For each trajectory
+            # Stacks the control inputs for each trajectory
+            inputs =  np.vstack([split_data[j][i] for j in range(1, len(split_data))]).T
+            
+            # Appends the control inputs for each trajectory to a list containing all trajectories
+            u.append(inputs)
+            
+    else:
         
-        # Appends the control inputs for each trajectory to a list containing all trajectories
-        u.append(inputs)
-    
+        # Stacks the control inputs
+        u =  np.vstack([split_data[j] for j in range(1, len(split_data))]).T
+            
+            
+        
 u_delayed = u # Legacy, keep incase want to add delays to the inputs again
 
-dt = 1
+dt = 2
 
 spatial_grid = np.arange(0, 3, step = 1)      # To to do a north-south line of 3 points
-temporal_grid = np.arange(0, len(X[0]) * dt, step = 1 * dt)
+
+if multiple_trajectories:
+    temporal_grid = np.arange(0, len(X[0]) * dt, step = 1 * dt)
+else:
+    temporal_grid = np.arange(0, len(X) * dt, step = 1 * dt)
 
 spatial, temporal = np.meshgrid(spatial_grid, temporal_grid, indexing = "ij")
 
@@ -659,35 +784,352 @@ mod = ps.SINDy(optimizer = optimizer,
                feature_library= lib,
                differentiation_method=differentiation_method)
 
+
 # Fit SINDy model
 mod.fit(x = X, t = dt, u = u_delayed)
 
 # Print the best fit approximation
 mod.print()
-print(mod.score(X, dt, u = u_delayed)) # R² score of model
-#%%
 
-print("Shape of x:", np.shape(X))
-print("Shape of u:", np.shape(u_delayed))
+print(mod.score(X_validation[0], dt, u = u_validation[0])) # R² score of model
 
-#%%
 
-# Differentiation method tests
-diff = ps.SmoothedFiniteDifference(smoother_kws={"window_length" : 10})
-x_dot = diff._differentiate(x, t)
-
-plt.plot(x_dot[:2000])
-plt.show()
 
 #%%
-plt.plot(x)
-plt.show()
-plt.plot(x_dot)
+
+def read_and_int_validation_Jpar():
+    Jpar, cLat_deg, lon_deg, missing_days, missing_indices = read_Jpar(from_year_index = 11, 
+                                                                       nr_days = 365 * 3,
+                                                                       directory_path = AMPERE_PATH)  
+    Jpar_downsampled = Jpar
+    cLat_deg_downsampled = cLat_deg
+    lon_deg_downsampled = lon_deg
+
+    interp_length = 10
+    want_coordinates = True
+    # If 1 column contains a nan, every column contains nan at the same place
+    # find_nans() is bottlenecking, vectorize it at some point
+    for column in range(Jpar_downsampled.shape[1]): 
+        Jpar_downsampled[:, column], nan_start_Jpar, nan_end_Jpar, nan_lengths_Jpar, no_nan_lengths_Jpar = interpolate_nans(Jpar_downsampled[:, column],
+                                                          max_nan_length=interp_length)
+        
+        if want_coordinates:
+            cLat_deg_downsampled[:, column], _, _, _, _ = interpolate_nans(cLat_deg_downsampled[:, column],
+                                                          max_nan_length=interp_length)
+            lon_deg_downsampled[:, column],  _, _, _, _ = interpolate_nans(lon_deg_downsampled[:, column],
+                                                          max_nan_length=interp_length)
+    fin = -1
+    integrated_out_Jpar, integrated_in_Jpar= integrate_FACs(Jpar_downsampled[:fin], 
+                          cLat_deg_downsampled[:fin], lon_deg_downsampled[:fin])
+
+    integrated_out_Jpar = integrated_out_Jpar.flatten()
+    integrated_in_Jpar = integrated_in_Jpar.flatten()
+
+
+    norm_out = mean_norm(integrated_out_Jpar)
+    norm_in = mean_norm(integrated_in_Jpar)
+
+    window_size = 15
+
+    smoothed_out = moving_average(norm_out.flatten(), window_size)
+    smoothed_in = moving_average(norm_in.flatten(), window_size)
+
+    # Reads in OMNI data with a time resolution of 1 minute
+    # DOES NOT HAVE TO BE READ IN MORE THAN ONCE PER KERNEL
+    omni_data = pod.GetOMNI([2020, 2023], Res = 1)
+
+
+    AE = omni_data.AE
+    AL = omni_data.AL
+    AU = omni_data.AU
+    B = omni_data.B
+    Bx = omni_data.BxGSE
+    By = omni_data.ByGSE
+    Bz = omni_data.BzGSE
+    Vx = omni_data.Vx
+    Vy = omni_data.Vy
+    Vz = omni_data.Vz
+
+    interp_len = 15
+
+    AE_interp = interpolate_nans(AE, interp_len)
+    AL_interp = interpolate_nans(AL, interp_len)
+    AU_interp = interpolate_nans(AU, interp_len)
+
+    B_interp = interpolate_nans(B, interp_len)
+    Bx_interp = interpolate_nans(Bx, interp_len)
+    By_interp = interpolate_nans(By, interp_len)
+    Bz_interp = interpolate_nans(Bz, interp_len)
+    Vx_interp = interpolate_nans(Vx, interp_len)
+    Vy_interp = interpolate_nans(Vy, interp_len)
+    Vz_interp = interpolate_nans(Vz, interp_len)
+
+    train_start = 0
+    train_end = len(Jpar)  - 1
+
+    # AU Does not contain NaNs
+    AE_train = AE_interp[0][::2][train_start:train_end]
+    AL_train = AL_interp[0][::2][train_start:train_end]
+    AU_train = AU_interp[0][::2][train_start:train_end]
+
+    B_train = B_interp[0][::2][train_start:train_end]
+    Bx_train = Bx_interp[0][::2][train_start:train_end]
+    By_train = By_interp[0][::2][train_start:train_end]
+    Bz_train = Bz_interp[0][::2][train_start:train_end]
+    Vx_train = Vx_interp[0][::2][train_start:train_end]
+    Vy_train = Vy_interp[0][::2][train_start:train_end]
+    Vz_train = Vz_interp[0][::2][train_start:train_end]
+
+    AE_train = mean_norm(AE_train)
+    AL_train = mean_norm(AL_train)
+    AU_train = mean_norm(AU_train)
+
+    B_train = mean_norm(B_train)
+    Bx_train = mean_norm(Bx_train)
+    By_train = mean_norm(By_train)
+    Bz_train = mean_norm(Bz_train)
+    Vx_train = mean_norm(Vx_train)
+    Vy_train = mean_norm(Vy_train)
+    Vz_train = mean_norm(Vz_train)
+
+    AE_smoothed = moving_average(AE_train, window_size)
+    AL_smoothed = moving_average(AL_train, window_size)
+    AU_smoothed = moving_average(AU_train, window_size)
+
+    B_smoothed = moving_average(B_train, window_size)
+    Bx_smoothed = moving_average(Bx_train, window_size)
+    By_smoothed = moving_average(By_train, window_size)
+    Bz_smoothed = moving_average(Bz_train, window_size)
+    Vx_smoothed = moving_average(Vx_train, window_size)
+    Vy_smoothed = moving_average(Vy_train, window_size)
+    Vz_smoothed = moving_average(Vz_train, window_size)
+
+    return smoothed_out, smoothed_in, B_smoothed, Bx_smoothed, By_smoothed, Bz_smoothed, Vx_smoothed, Vy_smoothed, Vz_smoothed
+
+data_validation = read_and_int_validation_Jpar()
+
+#%%
+
+test = read_Jpar(from_year_index = 11,
+                nr_days = 365,
+                directory_path = AMPERE_PATH)  
+
+#%%
+Jpar_validation = test[0]
+cLat_deg_validation = test[1]
+lon_deg_validation = test[2]
+Jpar_validation[Jpar_validation > 1e2] = np.nan
+cLat_deg_validation[Jpar_validation > 1e2] = np.nan
+lon_deg_validation[Jpar_validation > 1e2] = np.nan
+Jpar_validation[Jpar_validation < -1e2] = np.nan
+cLat_deg_validation[Jpar_validation < -1e2] = np.nan
+lon_deg_validation[Jpar_validation < -1e2] = np.nan
+
+
+fin = -1
+integrated_out_Jpar_validation, integrated_in_Jpar_validation= integrate_FACs(Jpar_validation[:fin], 
+                      cLat_deg_validation[:fin], lon_deg_validation[:fin])
+
+integrated_out_Jpar_validation = integrated_out_Jpar_validation.flatten()
+integrated_in_Jpar_validation = integrated_in_Jpar_validation.flatten()
+
+plt.plot(integrated_out_Jpar_validation)
+plt.plot(integrated_in_Jpar_validation)
 plt.show()
 
-plt.plot(u)
+
+norm_out_validation = mean_norm(integrated_out_Jpar_validation)
+norm_in_validation = mean_norm(integrated_in_Jpar_validation)
+
+plt.plot(norm_out_validation)
+plt.plot(norm_in_validation, alpha = 0.5)
 plt.show()
-print(np.any(np.isnan(x)))
+
+
+window_size = 15
+
+smoothed_out_validation = moving_average(norm_out_validation.flatten(), window_size)
+smoothed_in_validation = moving_average(norm_in_validation.flatten(), window_size)
+
+#%%
+valid_start = 0
+valid_end = len(smoothed_out_validation)
+#%%
+"""
+Should maybe change code to interpolate, then find overlapping data and then smooth? Maybe
+
+"""
+validation = subset_data([test[0][valid_start:valid_end, 0], data_validation[6][valid_start:valid_end],
+                               data_validation[8][valid_start:valid_end], data_validation[3][valid_start:valid_end]], traj_len, 1)
+
+
+#%%
+
+candidate_validation_arrays = [smoothed_out_validation[valid_start:valid_end], data_validation[6][valid_start:valid_end],
+                               data_validation[8][valid_start:valid_end], data_validation[3][valid_start:valid_end]]
+
+
+if multiple_trajectories:
+    
+    traj_len_validation = traj_len#int(traj_len/2)
+    
+    split_data_validation = subset_data(candidate_validation_arrays,
+                             traj_len_validation, 1, variable_length_allowed=False)
+
+
+if nr_of_X > 1:
+    X_validation = []
+    u_validation = []
+    for i in range(len(split_data_validation[0])): # For each trajectory
+        # Stacks the control inputs for each trajectory
+        Xs_validation =  np.vstack([split_data_validation[j][i] for j in range(0, nr_of_X)]).T
+        
+        inputs_validation =  np.vstack([split_data_validation[j][i] for j in range(nr_of_X, len(split_data_validation))]).T
+        
+        # Appends the control inputs for each trajectory to a list containing all trajectories
+        X_validation.append(Xs_validation)
+        u_validation.append(inputs_validation)
+    
+else:
+    X_validation = split_data_validation[0]
+    u_validation = []
+    if multiple_trajectories:
+        for i in range(len(split_data_validation[0])): # For each trajectory
+            # Stacks the control inputs for each trajectory
+            inputs_validation =  np.vstack([split_data_validation[j][i] for j in range(1, len(split_data_validation))]).T
+            
+            # Appends the control inputs for each trajectory to a list containing all trajectories
+            u_validation.append(inputs_validation)
+            
+    else:
+        
+        # Stacks the control inputs
+        u_validation =  np.vstack([split_data_validation[j] for j in range(1, len(split_data_validation))]).T
+
+print(mod.score(X_validation, dt, u = u_validation)) # R² score of model    
+
+# Create the second figure for original data
+plt.figure(figsize=(12, 8))
+# Subplot for X[0]
+plt.subplot(2, 1, 1)
+plt.plot(X[0], label='X[0]')
+plt.title('Original Data: X')
+plt.legend()
+# Subplot for u_delayed[0]
+plt.subplot(2, 1, 2)
+plt.plot(u_delayed[0], label='u_delayed[0]')
+plt.title('Original Data: u')
+plt.legend()
+plt.tight_layout()
+plt.show()
+# Create the first figure for validation data
+plt.figure(figsize=(12, 8))
+# Subplot for X_validation[0]
+plt.subplot(2, 1, 1)
+plt.plot(X_validation[0], label='X_validation[0]')
+plt.title('Validation Data: X')
+plt.legend()
+# Subplot for u_validation[0]
+plt.subplot(2, 1, 2)
+plt.plot(u_validation[0], label='u_validation[0]')
+plt.title('Validation Data: u')
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+#%%
+
+pred_train = mod.predict(X, u_delayed)
+pred_validation = mod.predict(X_validation, u_validation)
+
+# Create the first figure for validation data
+plt.figure(figsize=(12, 8))
+# Subplot for X_validation[0]
+plt.subplot(2, 1, 1)
+plt.plot(X[0], label='X')
+plt.plot(pred_train[0], alpha = 0.5, ls="--")
+plt.title('Real Data: X')
+plt.xlim(0, 100)
+plt.legend()
+# Subplot for u_validation[0]
+plt.subplot(2, 1, 2)
+plt.plot(X_validation[0], label='X validation')
+plt.plot(pred_validation[0], alpha = 0.5, ls="--")
+plt.title('Validation Data: X')
+plt.legend()
+plt.tight_layout()
+plt.xlim(0, 100)
+plt.show()
+
+#%%
+
+#%%
+t_sim = np.arange(0, 100, 1)
+u_sim = u_delayed[0][:len(t_sim)]
+x0_sim = [X[0][0]]
+sim_train = mod.simulate(x0_sim, t = t_sim, u = u_sim )
+
+
+
+plt.figure(figsize=(12, 8))
+# Subplot for X_validation[0]
+plt.subplot(2, 1, 1)
+plt.plot(X[0], label='X')
+plt.plot(sim_train[0], alpha = 0.5, ls="--")
+plt.title('Real Data: X')
+plt.xlim(0, 100)
+plt.legend()
+
+#%%
+
+print(u_sim.shape)
+print(t_sim.shape)
+
+#%%
+
+from scipy.integrate import solve_ivp
+
+def calc_rhs(arrays):
+    x0 = arrays[0]
+    u0 = arrays[1]
+    u1 = arrays[2]
+    u2 = arrays[3]
+    u3 = arrays[4]
+    
+    rhs = -0.005 * x0 +  0.001 * u2 -0.002 * x0**2 - 0.001 * x0 * u2 + 0.001 * x0 * u3 -0.007 * u2**2 + 0.004 * x0**3 + 0.005 * x0**2 * u2 -0.001 * x0**2 * u3 + 0.001 * x0 * u0 * u2 + 0.019 * x0 * u2**2 + 0.009 * u2**3 -0.001 * u2**2 * u3
+    
+    return rhs
+
+begin = 0
+to = 1000
+rhs = calc_rhs([split_data[0][0][begin:to], split_data[1][0][begin:to],
+               split_data[2][0][begin:to], split_data[3][0][begin:to], 
+               split_data[4][0][begin:to]])
+
+sol = solve_ivp(rhs, )
+
+plt.plot(rhs)
+plt.plot(mod.fit.x_dot)
+plt.show()
+#%%
+from sympy import symbols, Eq, solve
+def test():
+    
+    # Define the variables
+    x0, u0, u2, u3 = symbols('x0 u0 u2 u3')
+    # Define the right-hand side (rhs) equation
+    rhs = (-0.005 * x0 + 0.001 * u2 - 0.002 * x0**2 - 0.001 * x0 * u2 + 0.001 * x0 * u3
+           - 0.007 * u2**2 + 0.004 * x0**3 + 0.005 * x0**2 * u2 - 0.001 * x0**2 * u3
+           + 0.001 * x0 * u0 * u2 + 0.019 * x0 * u2**2 + 0.009 * u2**3 - 0.001 * u2**2 * u3)
+    # Set the equation to 0 (assuming you want to solve rhs = 0)
+    equation = Eq(rhs, 0)
+    # Solve for one variable (e.g., x0)
+    solution = solve(equation, x0)
+    # Print the solution
+    print("Solution for x0:")
+    print(solution)
+    return
+test()
 #%%
 
 """
@@ -697,12 +1139,20 @@ Only run if necessary/for a good fit.
 predict() is apparently quick, however only returns x_dot.
 """
 
-sim_length = 10
-t_sim = t[:sim_length]
+sim_length = 100
+t_sim = np.arange(0, sim_length, step = 1 * dt)
+u_sim = u_delayed[0][:len(t_sim), :]
+X_initial = np.array([X[0][0]])
 
-pred = mod.simulate(x[0, :], t, u = u[:, 0:len(t)])
+#print(f"X_inital's length : {X.shape}")
+print(f"t_sim shape : {t_sim.shape}")
+#print(f"u_sim shape : {u_sim.shape}")
 
-print(len(t), x.shape[0])
+
+pred = mod.simulate(X_initial, t_sim, u = u_sim)
+
+#%%
+print(f"Indices in WeakPDELibrary: {lib.inds_k}")
 
 #%%
 saved_mod = mod

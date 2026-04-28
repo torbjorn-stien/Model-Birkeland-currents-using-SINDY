@@ -314,10 +314,12 @@ integrated_out_Jpar, integrated_in_Jpar = integrate_FACs(Jpar_downsampled[:fin],
 integrated_out_Jpar = integrated_out_Jpar.flatten()
 integrated_in_Jpar = integrated_in_Jpar.flatten()
 
+integrated_out_Jpar[integrated_out_Jpar > 1] = np.nan
+integrated_in_Jpar[integrated_in_Jpar < -1] = np.nan
+
 plt.plot(integrated_out_Jpar)
 plt.plot(integrated_in_Jpar)
 plt.show()
-
 
 norm_out = mean_norm(integrated_out_Jpar)
 norm_in = mean_norm(integrated_in_Jpar)
@@ -326,12 +328,13 @@ plt.plot(norm_out)
 plt.plot(norm_in, alpha=0.5)
 plt.show()
 
+#%%
 
-window_size = 15
+window_size = 15 * 4
 
 smoothed_out = moving_average(norm_out.flatten(), window_size)
 smoothed_in = moving_average(norm_in.flatten(), window_size)
-# %%
+
 plt.plot(smoothed_out)
 plt.plot(smoothed_in, alpha=0.5)
 plt.show()
@@ -649,9 +652,9 @@ def replace_nans(arrays, replace_with):
     return new_arrays_list
 
 
-candidate_arrays = [smoothed_out,
-                    Vx_smoothed,
-                     Bz_smoothed, 
+candidate_arrays = [AE_smoothed, AL_smoothed,
+                    Bz_smoothed,
+                    
                    
                     ]
 
@@ -670,7 +673,7 @@ nr_of_X = 1
 multiple_trajectories = True
 if multiple_trajectories:
 
-    traj_len = 8000
+    traj_len = 10000
 
     split_data = subset_data(candidate_arrays,
                              traj_len, 1, variable_length_allowed=False)
@@ -682,12 +685,7 @@ if multiple_trajectories:
                               ],
                              traj_len, 1, variable_length_allowed=False)
     """
-
-if not multiple_trajectories:
-    split_data = replace_nans(candidate_arrays, replace_with=0)
-
-
-if multiple_trajectories:
+    
     print(f"The number of trajectories are: {len(split_data[0])}")
 
     for i in range(len(split_data)):
@@ -698,11 +696,14 @@ if multiple_trajectories:
     plt.tight_layout()
     plt.show()
 
-else:
+if not multiple_trajectories:
+    
+    split_data = replace_nans(candidate_arrays, replace_with=0)
+    
     print(f"The length of the trajectory is: {len(split_data[0])}")
 
     for i in range(len(split_data)):
-        plt.plot(split_data[i][0:10000], label=f"Input {i + 1}")
+        plt.plot(split_data[i][0:traj_len], label=f"Input {i + 1}")
     plt.title("First trajectory of all inputs")
     plt.ylim(-1, 1)
     plt.legend()
@@ -765,7 +766,7 @@ u_delayed = u  # Legacy, keep incase want to add delays to the inputs again
 dt = 2
 
 # To to do a north-south line of 3 points
-spatial_grid = np.arange(0, 3, step=1)
+spatial_grid = np.arange(0, 2, step=1)
 
 if multiple_trajectories:
     temporal_grid = np.arange(0, len(X[0]) * dt, step=1 * dt)
@@ -781,7 +782,7 @@ print("Shape of spatio_temporal_grid:", spatio_temporal_grid.shape)
 optimizer = ps.EnsembleOptimizer(opt=ps.SR3(  # reg_weight_lam= 0.03,relax_coeff_nu=5,
     regularizer="L2"),
     bagging=True, library_ensemble=True,
-    n_models=1000)  # Default aggregator is median
+    n_models=10000)  # Default aggregator is median
 
 feature_names = None
 
@@ -793,7 +794,7 @@ differentiation_method = ps.SmoothedFiniteDifference()
 # Only temporal grid gives dx/dt = 1/2 dx/dt + 1/2 dx/dt, R² = 1
 lib = ps.WeakPDELibrary(function_library=ps.PolynomialLibrary(degree=3),
                         spatiotemporal_grid=temporal_grid,
-                        derivative_order=2,
+                        derivative_order=0,
                         include_bias=True, include_interaction=True)
 
 # Various attempted libraries
@@ -803,22 +804,22 @@ combined_lib = ps.GeneralizedLibrary(libraries=[ps.PolynomialLibrary(), ps.Fouri
                                      )  # tensor_array = [[1, 1]])
 
 param_lib = ps.ParameterizedLibrary(feature_library=lib, parameter_library=lib,
-                                    num_features=3, num_parameters=2)
+                                    num_features=1, num_parameters=3)
 
 # Initialize SINDy model
 mod = ps.SINDy(optimizer=optimizer,
-               feature_library= lib,#ps.PolynomialLibrary(),
+               feature_library= lib,
                differentiation_method=differentiation_method)
 
-
+train_trajectories = 14
 # Fit SINDy model
-mod.fit(x=X[:4], t=dt, u=u_delayed[:4])
+mod.fit(x=X[:train_trajectories], t=dt, u=u_delayed[:train_trajectories])
 
 # Print the best fit approximation
 mod.print()
 
-print(mod.score(X[:4], dt, u=u_delayed[:4]))  # R² score of model
-print(mod.score(X[4:], dt, u=u_delayed[4:]))
+print(f"R^2 score on training data : {mod.score(X[:train_trajectories], dt, u=u_delayed[:train_trajectories])}")  # R² score of model
+print(f"R^2 score on validation data : {mod.score(X[train_trajectories:], dt, u=u_delayed[train_trajectories:])}")
 
 
 # %%
